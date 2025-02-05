@@ -13,6 +13,9 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+    - name: install adb
+      run: | 
+          sudo apt install libreadline-dev
     - name: make
       run: make
     - name: Changelog Tool
