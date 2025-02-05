@@ -1,0 +1,29 @@
+name: Build tester
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: make
+      run: make
+    - name: Changelog Tool
+  # You may pin to the exact commit or the version.
+  # uses: rcmachado/changelog-action@6f13828e5fabf77edd1795f62506a8c75b6aa3a6
+      uses: rcmachado/changelog-action@v1
+      with:
+    # Pass arguments to changelog command
+        args: fmt
+          
+#    - name: make check
+#      run: make check
+#    - name: make distcheck
+#      run: make distcheck
