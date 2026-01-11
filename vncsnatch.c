@@ -62,6 +62,7 @@ static void print_usage(const char *progname) {
   printf("  -f, --file PATH      IP2Location CSV file path\n");
   printf("  -w, --workers N      Number of worker threads\n");
   printf("  -t, --timeout SEC    Snapshot timeout in seconds (default 60)\n");
+  printf("  -p, --ports LIST     Comma-separated VNC ports (default 5900,5901)\n");
   printf("  -v, --verbose        Print per-host progress output\n");
   printf("  -q, --quiet          Suppress progress output\n");
   printf("  -h, --help           Show this help message\n");
@@ -95,6 +96,7 @@ int is_command_in_path(const char *command) {
 }
 
 static int run_vncsnapshot(const char *ip_addr, int timeout_sec);
+static int parse_ports(const char *arg, int *ports, size_t max_ports);
 
 typedef struct {
   uint32_t start;
@@ -116,6 +118,8 @@ typedef struct {
   int snapshot_timeout;
   int verbose;
   int quiet;
+  int ports[8];
+  size_t port_count;
   pthread_mutex_t stats_mutex;
   pthread_mutex_t print_mutex;
   struct timeval last_print;
@@ -197,6 +201,37 @@ static int get_worker_count(int override) {
     workers = 64;
   }
   return workers;
+}
+
+static int parse_ports(const char *arg, int *ports, size_t max_ports) {
+  if (!arg || !ports || max_ports == 0) {
+    return -1;
+  }
+
+  char *copy = strdup(arg);
+  if (!copy) {
+    return -1;
+  }
+
+  size_t count = 0;
+  char *token = strtok(copy, ",");
+  while (token) {
+    if (count >= max_ports) {
+      free(copy);
+      return -1;
+    }
+    char *end = NULL;
+    long value = strtol(token, &end, 10);
+    if (!end || *end != '\0' || value <= 0 || value > 65535) {
+      free(copy);
+      return -1;
+    }
+    ports[count++] = (int)value;
+    token = strtok(NULL, ",");
+  }
+
+  free(copy);
+  return count > 0 ? (int)count : -1;
 }
 
 static int get_next_ip(scan_context_t *ctx, uint32_t *ip_out) {
@@ -286,7 +321,12 @@ static void *scan_worker(void *arg) {
     int took_shot = 0;
 
     if (online) {
-      vnc_state = get_security(ip_addr, ctx->verbose != 0);
+      for (size_t i = 0; i < ctx->port_count; i++) {
+        vnc_state = get_security(ip_addr, ctx->ports[i], ctx->verbose != 0);
+        if (vnc_state >= 0) {
+          break;
+        }
+      }
       if (vnc_state == 1 &&
           run_vncsnapshot(ip_addr, ctx->snapshot_timeout) == 0) {
         took_shot = 1;
@@ -328,7 +368,7 @@ static void *scan_worker(void *arg) {
  */
 int parse_and_check_ips(const char *file_location, const char *country_code,
                         int workers, int snapshot_timeout, int verbose,
-                        int quiet) {
+                        int quiet, const int *ports, size_t port_count) {
   ip_range_t *ranges = NULL;
   size_t range_count = 0;
   uint64_t total_ips = 0;
@@ -360,6 +400,12 @@ int parse_and_check_ips(const char *file_location, const char *country_code,
   ctx.snapshot_timeout = snapshot_timeout;
   ctx.verbose = verbose;
   ctx.quiet = quiet;
+  ctx.port_count = port_count;
+  for (size_t i = 0; i < port_count &&
+                     i < (sizeof(ctx.ports) / sizeof(ctx.ports[0]));
+       i++) {
+    ctx.ports[i] = ports[i];
+  }
   pthread_mutex_init(&ctx.range_mutex, NULL);
   pthread_mutex_init(&ctx.stats_mutex, NULL);
   pthread_mutex_init(&ctx.print_mutex, NULL);
@@ -493,11 +539,14 @@ int main(int argc, char **argv) {
   int snapshot_timeout = 60;
   int verbose = 0;
   int quiet = 0;
+  int ports[8] = {5900, 5901};
+  size_t port_count = 2;
   static struct option long_options[] = {
       {"country", required_argument, 0, 'c'},
       {"file", required_argument, 0, 'f'},
       {"workers", required_argument, 0, 'w'},
       {"timeout", required_argument, 0, 't'},
+      {"ports", required_argument, 0, 'p'},
       {"verbose", no_argument, 0, 'v'},
       {"quiet", no_argument, 0, 'q'},
       {"help", no_argument, 0, 'h'},
@@ -526,7 +575,7 @@ int main(int argc, char **argv) {
     free(country_code);
     return 1;
   }
-  while ((opt = getopt_long(argc, argv, "c:f:w:t:vqh", long_options,
+  while ((opt = getopt_long(argc, argv, "c:f:w:t:p:vqh", long_options,
                             &option_index)) != -1) {
     switch (opt) {
     case 'c':
@@ -563,6 +612,17 @@ int main(int argc, char **argv) {
         return 1;
       }
       snapshot_timeout = (int)value;
+      break;
+    }
+    case 'p': {
+      int parsed = parse_ports(optarg, ports, sizeof(ports) / sizeof(ports[0]));
+      if (parsed < 0) {
+        fprintf(stderr, COLOR_RED "Invalid ports list.\n" COLOR_RESET);
+        free(country_code);
+        free(file_location);
+        return 1;
+      }
+      port_count = (size_t)parsed;
       break;
     }
     case 'v':
@@ -638,7 +698,7 @@ int main(int argc, char **argv) {
 
   int num_shots = parse_and_check_ips(cleaned_file_location, country_code,
                                       worker_override, snapshot_timeout,
-                                      verbose, quiet);
+                                      verbose, quiet, ports, port_count);
   printf(COLOR_GREEN
          "\nAll done. Enjoy %d new screenshots in this folder\n" COLOR_RESET,
          num_shots);

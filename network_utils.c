@@ -129,7 +129,7 @@ bool is_ip_up(const char *ip_addr) {
  * @return 1 if no authentication is required, 0 if auth is required,
  * -1 on connection or protocol failure.
  */
-int get_security(const char *tcp_ip, bool verbose) {
+int get_security(const char *tcp_ip, int port, bool verbose) {
   int result = -1;
   int vnc_socket;
   struct sockaddr_in server_addr;
@@ -171,7 +171,7 @@ int get_security(const char *tcp_ip, bool verbose) {
     printf(COLOR_GREEN "done\n" COLOR_RESET);
     fflush(stdout);
   }
-  server_addr.sin_port = htons(TCP_PORT);
+  server_addr.sin_port = htons((uint16_t)port);
   server_addr.sin_family = AF_INET;
   if (inet_pton(AF_INET, tcp_ip, &server_addr.sin_addr) != 1) {
     if (verbose) {
