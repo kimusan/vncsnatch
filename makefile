@@ -1,8 +1,8 @@
 CC=gcc
 RM=rm -f
-CFLAGS=-g -Wall
+CFLAGS=-g -Wall -pthread
 LDFLAGS=-g
-LDLIBS=-lcap -lreadline
+LDLIBS=-lcap -lreadline -pthread
 
 SRCS=vncsnatch.c file_utils.c misc_utils.c network_utils.c 
 OBJS=$(subst .c,.o,$(SRCS))

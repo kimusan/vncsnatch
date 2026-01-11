@@ -126,10 +126,11 @@ bool is_ip_up(const char *ip_addr) {
  * Connects to a VNC server and checks the security type.
  *
  * @param tcp_ip The IP address of the VNC server.
- * @return 1 if no authentication is required, 0 otherwise.
+ * @return 1 if no authentication is required, 0 if auth is required,
+ * -1 on connection or protocol failure.
  */
-int get_security(const char *tcp_ip) {
-  int snapshot_flag = 0;
+int get_security(const char *tcp_ip, bool verbose) {
+  int result = -1;
   int vnc_socket;
   struct sockaddr_in server_addr;
   struct timeval timeout;
@@ -138,99 +139,141 @@ int get_security(const char *tcp_ip) {
   unsigned char num_of_auth;
   unsigned char auth_type;
   int is_v33 = 0;
-  printf(COLOR_CYAN "   - Creating socket..." COLOR_RESET);
-  fflush(stdout);
+  if (verbose) {
+    printf(COLOR_CYAN "   - Creating socket..." COLOR_RESET);
+    fflush(stdout);
+  }
   timeout.tv_sec = 5;
   timeout.tv_usec = 0;
 
   vnc_socket = socket(AF_INET, SOCK_STREAM, 0);
   if (vnc_socket < 0) {
-    printf(COLOR_RED "failed\n" COLOR_RESET);
-    return snapshot_flag;
+    if (verbose) {
+      printf(COLOR_RED "failed\n" COLOR_RESET);
+    }
+    return -1;
   }
   // lets try to make some more sane timeouts if possible.
   if (setsockopt(vnc_socket, SOL_SOCKET, SO_RCVTIMEO, &timeout,
-                 sizeof timeout) < 0)
-    printf("setsockopt failed\n");
+                 sizeof timeout) < 0) {
+    if (verbose) {
+      printf("setsockopt failed\n");
+    }
+  }
 
   if (setsockopt(vnc_socket, SOL_SOCKET, SO_SNDTIMEO, &timeout,
-                 sizeof timeout) < 0)
-    printf("setsockopt failed\n");
-  printf(COLOR_GREEN "done\n" COLOR_RESET);
-  fflush(stdout);
+                 sizeof timeout) < 0) {
+    if (verbose) {
+      printf("setsockopt failed\n");
+    }
+  }
+  if (verbose) {
+    printf(COLOR_GREEN "done\n" COLOR_RESET);
+    fflush(stdout);
+  }
   server_addr.sin_port = htons(TCP_PORT);
   server_addr.sin_family = AF_INET;
   if (inet_pton(AF_INET, tcp_ip, &server_addr.sin_addr) != 1) {
-    printf(COLOR_RED "failed\n" COLOR_RESET);
+    if (verbose) {
+      printf(COLOR_RED "failed\n" COLOR_RESET);
+    }
     close(vnc_socket);
-    return snapshot_flag;
+    return -1;
   }
 
-  printf(COLOR_CYAN "   - Creating connection..." COLOR_RESET);
-  fflush(stdout);
+  if (verbose) {
+    printf(COLOR_CYAN "   - Creating connection..." COLOR_RESET);
+    fflush(stdout);
+  }
   if (connect(vnc_socket, (struct sockaddr *)&server_addr,
               sizeof(server_addr)) < 0) {
-    printf(COLOR_RED "failed\n" COLOR_RESET);
+    if (verbose) {
+      printf(COLOR_RED "failed\n" COLOR_RESET);
+    }
     close(vnc_socket);
-    return snapshot_flag;
+    return -1;
   }
 
-  printf(COLOR_GREEN "done\n" COLOR_RESET);
-  printf(COLOR_CYAN "   - Getting RFB version..." COLOR_RESET);
-  fflush(stdout);
+  if (verbose) {
+    printf(COLOR_GREEN "done\n" COLOR_RESET);
+    printf(COLOR_CYAN "   - Getting RFB version..." COLOR_RESET);
+    fflush(stdout);
+  }
   if (read_full(vnc_socket, rfb_version, 12) < 0) {
-    printf(COLOR_RED "failed\n" COLOR_RESET);
+    if (verbose) {
+      printf(COLOR_RED "failed\n" COLOR_RESET);
+    }
     close(vnc_socket);
-    return snapshot_flag;
+    return -1;
   }
   memcpy(rfb_version_send, rfb_version, sizeof(rfb_version_send));
   rfb_version[12] = '\0';
-  fflush(stdout);
+  if (verbose) {
+    fflush(stdout);
+  }
   if (strstr(rfb_version, "RFB") == NULL) {
     close(vnc_socket);
-    printf(COLOR_RED "failed\n" COLOR_RESET);
-    return snapshot_flag;
+    if (verbose) {
+      printf(COLOR_RED "failed\n" COLOR_RESET);
+    }
+    return -1;
   } else {
     rfb_version[strcspn(rfb_version, "\n")] = '\0';
-    printf("[%s]..", rfb_version);
+    if (verbose) {
+      printf("[%s]..", rfb_version);
+    }
   }
   if (strncmp(rfb_version, "RFB 003.003", 11) == 0) {
     is_v33 = 1;
   }
 
-  printf(COLOR_GREEN "done\n" COLOR_RESET);
-  printf(COLOR_CYAN "   - Getting auth type..." COLOR_RESET);
-  fflush(stdout);
+  if (verbose) {
+    printf(COLOR_GREEN "done\n" COLOR_RESET);
+    printf(COLOR_CYAN "   - Getting auth type..." COLOR_RESET);
+    fflush(stdout);
+  }
   if (write_full(vnc_socket, rfb_version_send, sizeof(rfb_version_send)) < 0) {
-    printf(COLOR_RED "failed\n" COLOR_RESET);
+    if (verbose) {
+      printf(COLOR_RED "failed\n" COLOR_RESET);
+    }
     close(vnc_socket);
-    return snapshot_flag;
+    return -1;
   }
 
   if (is_v33) {
     uint32_t auth_type32 = 0;
     if (read_full(vnc_socket, &auth_type32, sizeof(auth_type32)) < 0) {
-      printf(COLOR_RED "failed\n" COLOR_RESET);
+      if (verbose) {
+        printf(COLOR_RED "failed\n" COLOR_RESET);
+      }
       close(vnc_socket);
-      return snapshot_flag;
+      return -1;
     }
     auth_type32 = ntohl(auth_type32);
-    if (auth_type32 == 1) {
-      snapshot_flag = 1;
+    if (auth_type32 == 0) {
+      close(vnc_socket);
+      return -1;
+    }
+    result = auth_type32 == 1 ? 1 : 0;
+    if (auth_type32 == 1 && verbose) {
       printf(COLOR_CYAN "[no auth]..." COLOR_RESET);
     }
   } else {
     if (read_full(vnc_socket, &num_of_auth, 1) < 0) {
-      printf(COLOR_RED "failed\n" COLOR_RESET);
+      if (verbose) {
+        printf(COLOR_RED "failed\n" COLOR_RESET);
+      }
       close(vnc_socket);
-      return snapshot_flag;
+      return -1;
     }
     if (num_of_auth == 0) {
       uint32_t reason_len = 0;
       if (read_full(vnc_socket, &reason_len, sizeof(reason_len)) < 0) {
-        printf(COLOR_RED "failed\n" COLOR_RESET);
+        if (verbose) {
+          printf(COLOR_RED "failed\n" COLOR_RESET);
+        }
         close(vnc_socket);
-        return snapshot_flag;
+        return -1;
       }
       reason_len = ntohl(reason_len);
       if (reason_len > 0) {
@@ -242,30 +285,43 @@ int get_security(const char *tcp_ip) {
           free(reason);
         }
       }
-      printf(COLOR_RED "failed\n" COLOR_RESET);
+      if (verbose) {
+        printf(COLOR_RED "failed\n" COLOR_RESET);
+      }
       close(vnc_socket);
-      return snapshot_flag;
+      return -1;
     }
 
+    result = 0;
     for (unsigned int i = 0; i < num_of_auth; i++) {
       if (read_full(vnc_socket, &auth_type, 1) < 0) {
-        printf(COLOR_RED "failed\n" COLOR_RESET);
+        if (verbose) {
+          printf(COLOR_RED "failed\n" COLOR_RESET);
+        }
         close(vnc_socket);
-        return snapshot_flag;
+        return -1;
       }
       if (auth_type == 1) {
-        snapshot_flag = 1;
-        printf(COLOR_CYAN "[no auth]..." COLOR_RESET);
+        result = 1;
+        if (verbose) {
+          printf(COLOR_CYAN "[no auth]..." COLOR_RESET);
+        }
       } else {
-        printf(COLOR_CYAN "." COLOR_RESET);
+        if (verbose) {
+          printf(COLOR_CYAN "." COLOR_RESET);
+        }
       }
     }
   }
-  printf(COLOR_GREEN "done\n" COLOR_RESET);
-  printf(COLOR_CYAN "   - Closing socket..." COLOR_RESET);
-  fflush(stdout);
+  if (verbose) {
+    printf(COLOR_GREEN "done\n" COLOR_RESET);
+    printf(COLOR_CYAN "   - Closing socket..." COLOR_RESET);
+    fflush(stdout);
+  }
   shutdown(vnc_socket, SHUT_WR);
   close(vnc_socket);
-  printf(COLOR_GREEN "done\n" COLOR_RESET);
-  return snapshot_flag;
+  if (verbose) {
+    printf(COLOR_GREEN "done\n" COLOR_RESET);
+  }
+  return result;
 }

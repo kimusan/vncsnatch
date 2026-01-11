@@ -8,6 +8,6 @@
 
 unsigned short checksum(void *buf, int len);
 bool is_ip_up(const char *ip_addr);
-int get_security(const char *tcp_ip);
+int get_security(const char *tcp_ip, bool verbose);
 
 #endif // NETWORK_UTILS_H
