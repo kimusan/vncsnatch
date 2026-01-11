@@ -3,6 +3,8 @@
 #include "misc_utils.h"
 #include "network_utils.h"
 #include <arpa/inet.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/ip_icmp.h>
@@ -16,6 +18,7 @@
 #include <string.h>
 #include <sys/capability.h>
 #include <sys/socket.h>
+#include <sys/wait.h>
 #include <sys/time.h>
 #include <sys/types.h>
 #include <time.h>
@@ -75,6 +78,8 @@ int is_command_in_path(const char *command) {
   free(path_dup);
   return 0;
 }
+
+static int run_vncsnapshot(const char *ip_addr);
 
 /**
  * Parses the CSV file and checks IP addresses within specified ranges.
@@ -136,19 +141,12 @@ int parse_and_check_ips(const char *file_location, const char *country_code) {
 
         if (vncsnap_flag == 1) {
           printf("   - Getting screenshot...");
-          char *cmd = (char *)malloc(1024 * sizeof(char));
-          if (snprintf(cmd, 1024,
-                       "timeout 60 vncsnapshot -allowblank %s:0 %s.jpg > "
-                       "/dev/null 2>&1",
-                       ip_addr, ip_addr) >= 1024) {
-            fprintf(stderr, "Command buffer overflow detected.\n");
-            free(cmd);
-          } else {
-            system(cmd);
+          if (run_vncsnapshot(ip_addr) == 0) {
             num_shots++;
             printf("done\n");
             fflush(stdout);
-            free(cmd);
+          } else {
+            printf("failed\n");
           }
         }
       } else {
@@ -170,6 +168,61 @@ int parse_and_check_ips(const char *file_location, const char *country_code) {
 
 char *file_location = NULL;
 char *country_code = NULL;
+static int run_vncsnapshot(const char *ip_addr) {
+  char target[32];
+  char output[32];
+  char *argv[] = {"vncsnapshot", "-allowblank", target, output, NULL};
+  const int timeout_sec = 60;
+  time_t start_time = time(NULL);
+
+  if (snprintf(target, sizeof(target), "%s:0", ip_addr) >= (int)sizeof(target)) {
+    return -1;
+  }
+  if (snprintf(output, sizeof(output), "%s.jpg", ip_addr) >= (int)sizeof(output)) {
+    return -1;
+  }
+
+  pid_t pid = fork();
+  if (pid < 0) {
+    return -1;
+  }
+  if (pid == 0) {
+    int devnull = open("/dev/null", O_RDWR);
+    if (devnull >= 0) {
+      dup2(devnull, STDOUT_FILENO);
+      dup2(devnull, STDERR_FILENO);
+      if (devnull > STDERR_FILENO) {
+        close(devnull);
+      }
+    }
+    execvp(argv[0], argv);
+    _exit(127);
+  }
+
+  for (;;) {
+    int status = 0;
+    pid_t wait_result = waitpid(pid, &status, WNOHANG);
+    if (wait_result == pid) {
+      if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+        return 0;
+      }
+      return -1;
+    }
+    if (wait_result == 0) {
+      if (time(NULL) - start_time >= timeout_sec) {
+        kill(pid, SIGKILL);
+        waitpid(pid, &status, 0);
+        return -1;
+      }
+      usleep(100000);
+      continue;
+    }
+    if (wait_result < 0 && errno == EINTR) {
+      continue;
+    }
+    return -1;
+  }
+}
 
 /**
  * Signal handler for cleaning up resources on SIGINT.
