@@ -5,6 +5,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <getopt.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/ip_icmp.h>
@@ -53,6 +54,17 @@ int print_banner() {
   return 0;
 }
 
+static void print_usage(const char *progname) {
+  printf("Usage: %s [options]\n", progname);
+  printf("\n");
+  printf("Options:\n");
+  printf("  -c, --country CODE   Two-letter country code (e.g., DK)\n");
+  printf("  -f, --file PATH      IP2Location CSV file path\n");
+  printf("  -w, --workers N      Number of worker threads\n");
+  printf("  -t, --timeout SEC    Snapshot timeout in seconds (default 60)\n");
+  printf("  -h, --help           Show this help message\n");
+}
+
 /**
  * Checks if a given command is available in the system's PATH.
  *
@@ -80,7 +92,7 @@ int is_command_in_path(const char *command) {
   return 0;
 }
 
-static int run_vncsnapshot(const char *ip_addr);
+static int run_vncsnapshot(const char *ip_addr, int timeout_sec);
 
 typedef struct {
   uint32_t start;
@@ -99,6 +111,7 @@ typedef struct {
   uint64_t vnc_found;
   uint64_t vnc_noauth;
   uint64_t screenshots;
+  int snapshot_timeout;
   pthread_mutex_t stats_mutex;
   pthread_mutex_t print_mutex;
   struct timeval last_print;
@@ -166,7 +179,10 @@ static int load_country_ranges(const char *file_location,
   return 0;
 }
 
-static int get_worker_count(void) {
+static int get_worker_count(int override) {
+  if (override > 0) {
+    return override;
+  }
   long cpu_count = sysconf(_SC_NPROCESSORS_ONLN);
   int workers = cpu_count > 0 ? (int)cpu_count * 2 : 4;
 
@@ -258,7 +274,8 @@ static void *scan_worker(void *arg) {
 
     if (online) {
       vnc_state = get_security(ip_addr, false);
-      if (vnc_state == 1 && run_vncsnapshot(ip_addr) == 0) {
+      if (vnc_state == 1 &&
+          run_vncsnapshot(ip_addr, ctx->snapshot_timeout) == 0) {
         took_shot = 1;
       }
     }
@@ -292,7 +309,8 @@ static void *scan_worker(void *arg) {
  * @param country_code The country code to filter IP ranges.
  * @return The number of screenshots taken.
  */
-int parse_and_check_ips(const char *file_location, const char *country_code) {
+int parse_and_check_ips(const char *file_location, const char *country_code,
+                        int workers, int snapshot_timeout) {
   ip_range_t *ranges = NULL;
   size_t range_count = 0;
   uint64_t total_ips = 0;
@@ -321,12 +339,13 @@ int parse_and_check_ips(const char *file_location, const char *country_code) {
   ctx.range_index = 0;
   ctx.current_ip = ranges[0].start;
   ctx.total_ips = total_ips;
+  ctx.snapshot_timeout = snapshot_timeout;
   pthread_mutex_init(&ctx.range_mutex, NULL);
   pthread_mutex_init(&ctx.stats_mutex, NULL);
   pthread_mutex_init(&ctx.print_mutex, NULL);
   gettimeofday(&ctx.last_print, NULL);
 
-  int worker_count = get_worker_count();
+  int worker_count = get_worker_count(workers);
   printf("Using %d worker threads\n", worker_count);
   update_progress(&ctx, 1);
 
@@ -365,11 +384,10 @@ int parse_and_check_ips(const char *file_location, const char *country_code) {
 
 char *file_location = NULL;
 char *country_code = NULL;
-static int run_vncsnapshot(const char *ip_addr) {
+static int run_vncsnapshot(const char *ip_addr, int timeout_sec) {
   char target[32];
   char output[32];
   char *argv[] = {"vncsnapshot", "-allowblank", target, output, NULL};
-  const int timeout_sec = 60;
   time_t start_time = time(NULL);
 
   if (snprintf(target, sizeof(target), "%s:0", ip_addr) >= (int)sizeof(target)) {
@@ -444,7 +462,20 @@ void handle_sigint(int signum) {
  *
  * @return Exit status of the program.
  */
-int main() {
+int main(int argc, char **argv) {
+  int opt;
+  int option_index = 0;
+  int worker_override = 0;
+  int snapshot_timeout = 60;
+  static struct option long_options[] = {
+      {"country", required_argument, 0, 'c'},
+      {"file", required_argument, 0, 'f'},
+      {"workers", required_argument, 0, 'w'},
+      {"timeout", required_argument, 0, 't'},
+      {"help", no_argument, 0, 'h'},
+      {0, 0, 0, 0},
+  };
+
   // handle ctrl-c
   signal(SIGINT, handle_sigint);
   // print ansi banner
@@ -460,8 +491,6 @@ int main() {
     fprintf(stderr, COLOR_RED "Without this, the IP check will be slow as we "
                               "cannot just ping it.\n\n" COLOR_RESET);
   }
-  country_code = (char *)malloc(5 * sizeof(char));
-
   if (!is_command_in_path("vncsnapshot")) {
     fprintf(stderr, COLOR_RED
             "Error: vncsnapshot is not in the PATH. Please install it "
@@ -469,18 +498,87 @@ int main() {
     free(country_code);
     return 1;
   }
-  printf("Please enter the country code to filter by (e.g., AU): ");
-  if (fgets(country_code, 3, stdin) == NULL) {
-    fprintf(stderr, COLOR_RED "Error reading country code.\n" COLOR_RESET);
+  while ((opt = getopt_long(argc, argv, "c:f:w:t:h", long_options,
+                            &option_index)) != -1) {
+    switch (opt) {
+    case 'c':
+      if (country_code) {
+        free(country_code);
+      }
+      country_code = strdup(optarg);
+      break;
+    case 'f':
+      if (file_location) {
+        free(file_location);
+      }
+      file_location = strdup(optarg);
+      break;
+    case 'w': {
+      char *end = NULL;
+      long value = strtol(optarg, &end, 10);
+      if (!end || *end != '\0' || value <= 0 || value > 256) {
+        fprintf(stderr, COLOR_RED "Invalid worker count.\n" COLOR_RESET);
+        free(country_code);
+        free(file_location);
+        return 1;
+      }
+      worker_override = (int)value;
+      break;
+    }
+    case 't': {
+      char *end = NULL;
+      long value = strtol(optarg, &end, 10);
+      if (!end || *end != '\0' || value <= 0 || value > 3600) {
+        fprintf(stderr, COLOR_RED "Invalid timeout value.\n" COLOR_RESET);
+        free(country_code);
+        free(file_location);
+        return 1;
+      }
+      snapshot_timeout = (int)value;
+      break;
+    }
+    case 'h':
+      print_usage(argv[0]);
+      free(country_code);
+      free(file_location);
+      return 0;
+    default:
+      print_usage(argv[0]);
+      free(country_code);
+      free(file_location);
+      return 1;
+    }
+  }
+
+  if (!country_code) {
+    char input[8];
+    printf("Please enter the country code to filter by (e.g., AU): ");
+    if (fgets(input, sizeof(input), stdin) == NULL) {
+      fprintf(stderr, COLOR_RED "Error reading country code.\n" COLOR_RESET);
+      return 1;
+    }
+    input[strcspn(input, "\n")] = '\0';
+    country_code = strdup(input);
+    if (!country_code) {
+      fprintf(stderr, COLOR_RED "Out of memory.\n" COLOR_RESET);
+      return 1;
+    }
+  }
+
+  if (strlen(country_code) != 2) {
+    fprintf(stderr, COLOR_RED "Country code must be 2 letters.\n" COLOR_RESET);
     free(country_code);
+    free(file_location);
     return 1;
   }
-  country_code[strcspn(country_code, "\n")] = '\0';
-  printf("Please enter full file path to the CSV file from "
-         "IP2Location.com.\nIt can be downloaded from "
-         "https://download.ip2location.com/lite/"
-         "\n\nFull path: ");
-  file_location = readline("==>");
+
+  if (!file_location) {
+    printf("Please enter full file path to the CSV file from "
+           "IP2Location.com.\nIt can be downloaded from "
+           "https://download.ip2location.com/lite/"
+           "\n\nFull path: ");
+    file_location = readline("==>");
+  }
   if (file_location == NULL || strlen(file_location) == 0) {
     fprintf(stderr, COLOR_RED "Error reading user input.\n" COLOR_RESET);
     if (file_location)
@@ -500,7 +598,8 @@ int main() {
     return 1;
   }
 
-  int num_shots = parse_and_check_ips(cleaned_file_location, country_code);
+  int num_shots = parse_and_check_ips(cleaned_file_location, country_code,
+                                      worker_override, snapshot_timeout);
   printf(COLOR_GREEN
          "\nAll done. Enjoy %d new screenshots in this folder\n" COLOR_RESET,
          num_shots);
