@@ -7,25 +7,35 @@
  * Cleans the file path by trimming whitespace and removing escape characters.
  *
  * @param file_location The original file path.
- * @return A cleaned version of the file path.
+ * @return A newly allocated cleaned file path, or NULL on failure.
  */
+char *clean_file_location(const char *s) {
+  const char *start;
+  const char *end;
+  size_t len;
+  char *cleaned;
 
-char *clean_file_location(char *s) {
-  size_t size;
-  char *end;
+  if (!s) {
+    return NULL;
+  }
 
-  size = strlen(s);
+  start = s;
+  while (*start && isspace((unsigned char)*start)) {
+    start++;
+  }
 
-  if (!size)
-    return s;
-
-  end = s + size - 1;
-  while (end >= s && isspace(*end))
+  end = s + strlen(s);
+  while (end > start && isspace((unsigned char)*(end - 1))) {
     end--;
-  *(end + 1) = '\0';
+  }
 
-  while (*s && isspace(*s))
-    s++;
+  len = (size_t)(end - start);
+  cleaned = malloc(len + 1);
+  if (!cleaned) {
+    return NULL;
+  }
 
-  return s;
+  memcpy(cleaned, start, len);
+  cleaned[len] = '\0';
+  return cleaned;
 }

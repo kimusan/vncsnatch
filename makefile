@@ -4,7 +4,7 @@ CFLAGS=-g -Wall
 LDFLAGS=-g
 LDLIBS=-lcap -lreadline
 
-SRCS=vncsnatch.c file_utils.c network_utils.c 
+SRCS=vncsnatch.c file_utils.c misc_utils.c network_utils.c 
 OBJS=$(subst .c,.o,$(SRCS))
 
 all: vncsnatch
@@ -24,5 +24,4 @@ clean:
 distclean: clean
 				$(RM) *~ .depend
 
-include .depend
-
+-include .depend
