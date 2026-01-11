@@ -62,6 +62,8 @@ static void print_usage(const char *progname) {
   printf("  -f, --file PATH      IP2Location CSV file path\n");
   printf("  -w, --workers N      Number of worker threads\n");
   printf("  -t, --timeout SEC    Snapshot timeout in seconds (default 60)\n");
+  printf("  -v, --verbose        Print per-host progress output\n");
+  printf("  -q, --quiet          Suppress progress output\n");
   printf("  -h, --help           Show this help message\n");
 }
 
@@ -112,6 +114,8 @@ typedef struct {
   uint64_t vnc_noauth;
   uint64_t screenshots;
   int snapshot_timeout;
+  int verbose;
+  int quiet;
   pthread_mutex_t stats_mutex;
   pthread_mutex_t print_mutex;
   struct timeval last_print;
@@ -217,6 +221,9 @@ static int get_next_ip(scan_context_t *ctx, uint32_t *ip_out) {
 }
 
 static void update_progress(scan_context_t *ctx, int force) {
+  if (ctx->quiet || ctx->verbose) {
+    return;
+  }
   struct timeval now;
   gettimeofday(&now, NULL);
 
@@ -268,16 +275,26 @@ static void *scan_worker(void *arg) {
       continue;
     }
 
+    if (ctx->verbose) {
+      pthread_mutex_lock(&ctx->print_mutex);
+      printf("Checking address %s:\n", ip_addr);
+      pthread_mutex_unlock(&ctx->print_mutex);
+    }
+
     int online = is_ip_up(ip_addr);
     int vnc_state = -1;
     int took_shot = 0;
 
     if (online) {
-      vnc_state = get_security(ip_addr, false);
+      vnc_state = get_security(ip_addr, ctx->verbose != 0);
       if (vnc_state == 1 &&
           run_vncsnapshot(ip_addr, ctx->snapshot_timeout) == 0) {
         took_shot = 1;
       }
+    } else if (ctx->verbose) {
+      pthread_mutex_lock(&ctx->print_mutex);
+      printf("not online. Skipping!\n");
+      pthread_mutex_unlock(&ctx->print_mutex);
     }
 
     pthread_mutex_lock(&ctx->stats_mutex);
@@ -310,7 +327,8 @@ static void *scan_worker(void *arg) {
  * @return The number of screenshots taken.
  */
 int parse_and_check_ips(const char *file_location, const char *country_code,
-                        int workers, int snapshot_timeout) {
+                        int workers, int snapshot_timeout, int verbose,
+                        int quiet) {
   ip_range_t *ranges = NULL;
   size_t range_count = 0;
   uint64_t total_ips = 0;
@@ -340,13 +358,17 @@ int parse_and_check_ips(const char *file_location, const char *country_code,
   ctx.current_ip = ranges[0].start;
   ctx.total_ips = total_ips;
   ctx.snapshot_timeout = snapshot_timeout;
+  ctx.verbose = verbose;
+  ctx.quiet = quiet;
   pthread_mutex_init(&ctx.range_mutex, NULL);
   pthread_mutex_init(&ctx.stats_mutex, NULL);
   pthread_mutex_init(&ctx.print_mutex, NULL);
   gettimeofday(&ctx.last_print, NULL);
 
   int worker_count = get_worker_count(workers);
-  printf("Using %d worker threads\n", worker_count);
+  if (!quiet) {
+    printf("Using %d worker threads\n", worker_count);
+  }
   update_progress(&ctx, 1);
 
   pthread_t *threads = calloc((size_t)worker_count, sizeof(*threads));
@@ -367,7 +389,9 @@ int parse_and_check_ips(const char *file_location, const char *country_code,
   }
 
   update_progress(&ctx, 1);
-  printf("\n");
+  if (!quiet && !verbose) {
+    printf("\n");
+  }
   printf("Finished checking %llu addresses, VNCs found %llu (no auth %llu), screenshots %llu\n",
          (unsigned long long)ctx.scanned_ips,
          (unsigned long long)ctx.vnc_found,
@@ -467,11 +491,15 @@ int main(int argc, char **argv) {
   int option_index = 0;
   int worker_override = 0;
   int snapshot_timeout = 60;
+  int verbose = 0;
+  int quiet = 0;
   static struct option long_options[] = {
       {"country", required_argument, 0, 'c'},
       {"file", required_argument, 0, 'f'},
       {"workers", required_argument, 0, 'w'},
       {"timeout", required_argument, 0, 't'},
+      {"verbose", no_argument, 0, 'v'},
+      {"quiet", no_argument, 0, 'q'},
       {"help", no_argument, 0, 'h'},
       {0, 0, 0, 0},
   };
@@ -498,7 +526,7 @@ int main(int argc, char **argv) {
     free(country_code);
     return 1;
   }
-  while ((opt = getopt_long(argc, argv, "c:f:w:t:h", long_options,
+  while ((opt = getopt_long(argc, argv, "c:f:w:t:vqh", long_options,
                             &option_index)) != -1) {
     switch (opt) {
     case 'c':
@@ -537,6 +565,12 @@ int main(int argc, char **argv) {
       snapshot_timeout = (int)value;
       break;
     }
+    case 'v':
+      verbose = 1;
+      break;
+    case 'q':
+      quiet = 1;
+      break;
     case 'h':
       print_usage(argv[0]);
       free(country_code);
@@ -598,8 +632,13 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  if (quiet && verbose) {
+    quiet = 0;
+  }
+
   int num_shots = parse_and_check_ips(cleaned_file_location, country_code,
-                                      worker_override, snapshot_timeout);
+                                      worker_override, snapshot_timeout,
+                                      verbose, quiet);
   printf(COLOR_GREEN
          "\nAll done. Enjoy %d new screenshots in this folder\n" COLOR_RESET,
          num_shots);
