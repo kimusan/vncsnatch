@@ -134,6 +134,7 @@ int get_security(const char *tcp_ip) {
   struct sockaddr_in server_addr;
   struct timeval timeout;
   char rfb_version[13];
+  char rfb_version_send[12];
   unsigned char num_of_auth;
   unsigned char auth_type;
   int is_v33 = 0;
@@ -182,6 +183,7 @@ int get_security(const char *tcp_ip) {
     close(vnc_socket);
     return snapshot_flag;
   }
+  memcpy(rfb_version_send, rfb_version, sizeof(rfb_version_send));
   rfb_version[12] = '\0';
   fflush(stdout);
   if (strstr(rfb_version, "RFB") == NULL) {
@@ -199,7 +201,7 @@ int get_security(const char *tcp_ip) {
   printf(COLOR_GREEN "done\n" COLOR_RESET);
   printf(COLOR_CYAN "   - Getting auth type..." COLOR_RESET);
   fflush(stdout);
-  if (write_full(vnc_socket, rfb_version, 12) < 0) {
+  if (write_full(vnc_socket, rfb_version_send, sizeof(rfb_version_send)) < 0) {
     printf(COLOR_RED "failed\n" COLOR_RESET);
     close(vnc_socket);
     return snapshot_flag;
