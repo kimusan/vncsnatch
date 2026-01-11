@@ -10,6 +10,7 @@
 #include <readline/readline.h>
 #include <signal.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -99,17 +100,25 @@ int parse_and_check_ips(const char *file_location, const char *country_code) {
   while (fgets(line, 1024, file) != NULL) {
     char start_ip_str[20], end_ip_str[20], csv_country_code[3],
         country_name[50];
-    sscanf(line, "\"%[^\"]\",\"%[^\"]\",\"%[^\"]\",\"%[^\"]\"", start_ip_str,
-           end_ip_str, csv_country_code, country_name);
+    int parsed = sscanf(line, "\"%19[^\"]\",\"%19[^\"]\",\"%2[^\"]\",\"%49[^\"]\"",
+                        start_ip_str, end_ip_str, csv_country_code, country_name);
+    if (parsed != 4) {
+      continue;
+    }
 
     if (strcmp(csv_country_code, country_code) != 0) {
       continue;
     }
 
-    unsigned long start_ip = strtoul(start_ip_str, NULL, 10);
-    unsigned long end_ip = strtoul(end_ip_str, NULL, 10);
+    uint32_t start_ip = (uint32_t)strtoul(start_ip_str, NULL, 10);
+    uint32_t end_ip = (uint32_t)strtoul(end_ip_str, NULL, 10);
 
-    for (unsigned long ip = start_ip; ip <= end_ip; ip++) {
+    if (start_ip > end_ip) {
+      continue;
+    }
+
+    uint32_t ip = start_ip;
+    while (1) {
       struct in_addr ip_addr_struct;
       ip_addr_struct.s_addr = htonl(ip);
       char *ip_addr = inet_ntoa(ip_addr_struct);
@@ -124,28 +133,31 @@ int parse_and_check_ips(const char *file_location, const char *country_code) {
           fprintf(index_file, "%d\n", current_index);
           fclose(index_file);
         }
+
+        if (vncsnap_flag == 1) {
+          printf("   - Getting screenshot...");
+          char *cmd = (char *)malloc(1024 * sizeof(char));
+          if (snprintf(cmd, 1024,
+                       "timeout 60 vncsnapshot -allowblank %s:0 %s.jpg > "
+                       "/dev/null 2>&1",
+                       ip_addr, ip_addr) >= 1024) {
+            fprintf(stderr, "Command buffer overflow detected.\n");
+            free(cmd);
+          } else {
+            system(cmd);
+            num_shots++;
+            printf("done\n");
+            fflush(stdout);
+            free(cmd);
+          }
+        }
       } else {
         printf("not online. Skipping!\n");
-        continue;
       }
-
-      if (vncsnap_flag == 1) {
-        printf("   - Getting screenshot...");
-        char *cmd = (char *)malloc(1024 * sizeof(char));
-        if (snprintf(cmd, 1024,
-                     "timeout 60 vncsnapshot -allowblank %s:0 %s.jpg > "
-                     "/dev/null 2>&1",
-                     ip_addr, ip_addr) >= 1024) {
-          fprintf(stderr, "Command buffer overflow detected.\n");
-          free(cmd);
-          continue;
-        }
-        system(cmd);
-        num_shots++;
-        printf("done\n");
-        fflush(stdout);
-        free(cmd);
+      if (ip == end_ip) {
+        break;
       }
+      ip++;
     }
   }
 
