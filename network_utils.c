@@ -2,6 +2,7 @@
 #include "color_defs.h"
 #include "misc_utils.h"
 #include <arpa/inet.h>
+#include <errno.h>
 #include <netinet/ip_icmp.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,6 +31,45 @@ unsigned short checksum(void *buf, int len) {
   sum += (sum >> 16);
   result = ~sum;
   return result;
+}
+
+static int read_full(int fd, void *buf, size_t len) {
+  size_t total = 0;
+  char *p = buf;
+
+  while (total < len) {
+    ssize_t n = recv(fd, p + total, len - total, 0);
+    if (n == 0) {
+      return -1;
+    }
+    if (n < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      return -1;
+    }
+    total += (size_t)n;
+  }
+
+  return 0;
+}
+
+static int write_full(int fd, const void *buf, size_t len) {
+  size_t total = 0;
+  const char *p = buf;
+
+  while (total < len) {
+    ssize_t n = send(fd, p + total, len - total, 0);
+    if (n < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      return -1;
+    }
+    total += (size_t)n;
+  }
+
+  return 0;
 }
 /**
  * Checks if an IP address is reachable using ICMP echo requests.
@@ -94,8 +134,9 @@ int get_security(const char *tcp_ip) {
   struct sockaddr_in server_addr;
   struct timeval timeout;
   char rfb_version[13];
-  char num_of_auth;
-  char auth_type;
+  unsigned char num_of_auth;
+  unsigned char auth_type;
+  int is_v33 = 0;
   printf(COLOR_CYAN "   - Creating socket..." COLOR_RESET);
   fflush(stdout);
   timeout.tv_sec = 5;
@@ -118,7 +159,11 @@ int get_security(const char *tcp_ip) {
   fflush(stdout);
   server_addr.sin_port = htons(TCP_PORT);
   server_addr.sin_family = AF_INET;
-  inet_pton(AF_INET, tcp_ip, &server_addr.sin_addr);
+  if (inet_pton(AF_INET, tcp_ip, &server_addr.sin_addr) != 1) {
+    printf(COLOR_RED "failed\n" COLOR_RESET);
+    close(vnc_socket);
+    return snapshot_flag;
+  }
 
   printf(COLOR_CYAN "   - Creating connection..." COLOR_RESET);
   fflush(stdout);
@@ -132,7 +177,11 @@ int get_security(const char *tcp_ip) {
   printf(COLOR_GREEN "done\n" COLOR_RESET);
   printf(COLOR_CYAN "   - Getting RFB version..." COLOR_RESET);
   fflush(stdout);
-  recv(vnc_socket, rfb_version, 12, 0);
+  if (read_full(vnc_socket, rfb_version, 12) < 0) {
+    printf(COLOR_RED "failed\n" COLOR_RESET);
+    close(vnc_socket);
+    return snapshot_flag;
+  }
   rfb_version[12] = '\0';
   fflush(stdout);
   if (strstr(rfb_version, "RFB") == NULL) {
@@ -143,20 +192,71 @@ int get_security(const char *tcp_ip) {
     rfb_version[strcspn(rfb_version, "\n")] = '\0';
     printf("[%s]..", rfb_version);
   }
+  if (strncmp(rfb_version, "RFB 003.003", 11) == 0) {
+    is_v33 = 1;
+  }
 
   printf(COLOR_GREEN "done\n" COLOR_RESET);
   printf(COLOR_CYAN "   - Getting auth type..." COLOR_RESET);
   fflush(stdout);
-  send(vnc_socket, rfb_version, 12, 0);
-  recv(vnc_socket, &num_of_auth, 1, 0);
+  if (write_full(vnc_socket, rfb_version, 12) < 0) {
+    printf(COLOR_RED "failed\n" COLOR_RESET);
+    close(vnc_socket);
+    return snapshot_flag;
+  }
 
-  for (int i = 0; i < (unsigned char)num_of_auth; i++) {
-    recv(vnc_socket, &auth_type, 1, 0);
-    if ((unsigned char)auth_type == 1) {
+  if (is_v33) {
+    uint32_t auth_type32 = 0;
+    if (read_full(vnc_socket, &auth_type32, sizeof(auth_type32)) < 0) {
+      printf(COLOR_RED "failed\n" COLOR_RESET);
+      close(vnc_socket);
+      return snapshot_flag;
+    }
+    auth_type32 = ntohl(auth_type32);
+    if (auth_type32 == 1) {
       snapshot_flag = 1;
       printf(COLOR_CYAN "[no auth]..." COLOR_RESET);
-    } else {
-      printf(COLOR_CYAN "." COLOR_RESET);
+    }
+  } else {
+    if (read_full(vnc_socket, &num_of_auth, 1) < 0) {
+      printf(COLOR_RED "failed\n" COLOR_RESET);
+      close(vnc_socket);
+      return snapshot_flag;
+    }
+    if (num_of_auth == 0) {
+      uint32_t reason_len = 0;
+      if (read_full(vnc_socket, &reason_len, sizeof(reason_len)) < 0) {
+        printf(COLOR_RED "failed\n" COLOR_RESET);
+        close(vnc_socket);
+        return snapshot_flag;
+      }
+      reason_len = ntohl(reason_len);
+      if (reason_len > 0) {
+        char *reason = malloc(reason_len + 1);
+        if (reason) {
+          if (read_full(vnc_socket, reason, reason_len) == 0) {
+            reason[reason_len] = '\0';
+          }
+          free(reason);
+        }
+      }
+      printf(COLOR_RED "failed\n" COLOR_RESET);
+      close(vnc_socket);
+      return snapshot_flag;
+    }
+
+    for (unsigned int i = 0; i < num_of_auth; i++) {
+      if (read_full(vnc_socket, &auth_type, 1) < 0) {
+        printf(COLOR_RED "failed\n" COLOR_RESET);
+        close(vnc_socket);
+        return snapshot_flag;
+      }
+      if (auth_type == 1) {
+        snapshot_flag = 1;
+        printf(COLOR_CYAN "[no auth]..." COLOR_RESET);
+      } else {
+        printf(COLOR_CYAN "." COLOR_RESET);
+      }
     }
   }
   printf(COLOR_GREEN "done\n" COLOR_RESET);
