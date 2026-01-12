@@ -24,4 +24,7 @@ clean:
 distclean: clean
 				$(RM) *~ .depend
 
+test:
+				./tests/run_tests.sh
+
 -include .depend
