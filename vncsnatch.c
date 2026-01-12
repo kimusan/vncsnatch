@@ -63,6 +63,8 @@ static void print_usage(const char *progname) {
   printf("  -w, --workers N      Number of worker threads\n");
   printf("  -t, --timeout SEC    Snapshot timeout in seconds (default 60)\n");
   printf("  -p, --ports LIST     Comma-separated VNC ports (default 5900,5901)\n");
+  printf("  -r, --resume         Resume from .line checkpoint\n");
+  printf("  -R, --rate N         Limit scans to N IPs per second\n");
   printf("  -v, --verbose        Print per-host progress output\n");
   printf("  -q, --quiet          Suppress progress output\n");
   printf("  -h, --help           Show this help message\n");
@@ -120,6 +122,13 @@ typedef struct {
   int quiet;
   int ports[8];
   size_t port_count;
+  int resume_enabled;
+  uint64_t resume_offset;
+  int rate_limit;
+  pthread_mutex_t rate_mutex;
+  struct timeval last_rate_time;
+  pthread_mutex_t checkpoint_mutex;
+  struct timeval last_checkpoint;
   pthread_mutex_t stats_mutex;
   pthread_mutex_t print_mutex;
   struct timeval last_print;
@@ -234,6 +243,105 @@ static int parse_ports(const char *arg, int *ports, size_t max_ports) {
   return count > 0 ? (int)count : -1;
 }
 
+static int read_resume_offset(const char *path, uint64_t *offset_out) {
+  FILE *file = fopen(path, "r");
+  if (!file) {
+    return -1;
+  }
+  unsigned long long value = 0;
+  if (fscanf(file, "%llu", &value) != 1) {
+    fclose(file);
+    return -1;
+  }
+  fclose(file);
+  *offset_out = (uint64_t)value;
+  return 0;
+}
+
+static void write_resume_offset(const char *path, uint64_t offset) {
+  FILE *file = fopen(path, "w");
+  if (!file) {
+    return;
+  }
+  fprintf(file, "%llu\n", (unsigned long long)offset);
+  fclose(file);
+}
+
+static int apply_resume_offset(scan_context_t *ctx) {
+  uint64_t offset = ctx->resume_offset;
+
+  if (offset == 0) {
+    return 0;
+  }
+
+  for (size_t i = 0; i < ctx->range_count; i++) {
+    uint64_t range_size = (uint64_t)ctx->ranges[i].end -
+                          (uint64_t)ctx->ranges[i].start + 1;
+    if (offset < range_size) {
+      ctx->range_index = i;
+      ctx->current_ip = ctx->ranges[i].start + (uint32_t)offset;
+      ctx->scanned_ips = ctx->resume_offset;
+      return 0;
+    }
+    offset -= range_size;
+  }
+
+  return -1;
+}
+
+static void rate_limit_wait(scan_context_t *ctx) {
+  if (ctx->rate_limit <= 0) {
+    return;
+  }
+
+  long interval_us = 1000000L / ctx->rate_limit;
+  struct timeval now;
+  struct timeval last;
+
+  pthread_mutex_lock(&ctx->rate_mutex);
+  gettimeofday(&now, NULL);
+  last = ctx->last_rate_time;
+  if (last.tv_sec == 0 && last.tv_usec == 0) {
+    ctx->last_rate_time = now;
+    pthread_mutex_unlock(&ctx->rate_mutex);
+    return;
+  }
+
+  long elapsed_us = (now.tv_sec - last.tv_sec) * 1000000L +
+                    (now.tv_usec - last.tv_usec);
+  if (elapsed_us < interval_us) {
+    usleep((useconds_t)(interval_us - elapsed_us));
+    gettimeofday(&now, NULL);
+  }
+  ctx->last_rate_time = now;
+  pthread_mutex_unlock(&ctx->rate_mutex);
+}
+
+static void checkpoint_update(scan_context_t *ctx, int force) {
+  if (!ctx->resume_enabled) {
+    return;
+  }
+
+  struct timeval now;
+  gettimeofday(&now, NULL);
+
+  pthread_mutex_lock(&ctx->checkpoint_mutex);
+  long elapsed_ms = (now.tv_sec - ctx->last_checkpoint.tv_sec) * 1000L +
+                    (now.tv_usec - ctx->last_checkpoint.tv_usec) / 1000L;
+  if (!force && elapsed_ms >= 0 && elapsed_ms < 1000) {
+    pthread_mutex_unlock(&ctx->checkpoint_mutex);
+    return;
+  }
+
+  pthread_mutex_lock(&ctx->stats_mutex);
+  uint64_t scanned = ctx->scanned_ips;
+  pthread_mutex_unlock(&ctx->stats_mutex);
+
+  write_resume_offset(".line", scanned);
+  ctx->last_checkpoint = now;
+  pthread_mutex_unlock(&ctx->checkpoint_mutex);
+}
+
 static int get_next_ip(scan_context_t *ctx, uint32_t *ip_out) {
   int has_ip = 0;
 
@@ -316,6 +424,8 @@ static void *scan_worker(void *arg) {
       pthread_mutex_unlock(&ctx->print_mutex);
     }
 
+    rate_limit_wait(ctx);
+
     int online = is_ip_up(ip_addr);
     int vnc_state = -1;
     int took_shot = 0;
@@ -354,6 +464,7 @@ static void *scan_worker(void *arg) {
     pthread_mutex_unlock(&ctx->stats_mutex);
 
     update_progress(ctx, 0);
+    checkpoint_update(ctx, 0);
   }
 
   return NULL;
@@ -368,7 +479,9 @@ static void *scan_worker(void *arg) {
  */
 int parse_and_check_ips(const char *file_location, const char *country_code,
                         int workers, int snapshot_timeout, int verbose,
-                        int quiet, const int *ports, size_t port_count) {
+                        int quiet, const int *ports, size_t port_count,
+                        int resume_enabled, uint64_t resume_offset,
+                        int rate_limit) {
   ip_range_t *ranges = NULL;
   size_t range_count = 0;
   uint64_t total_ips = 0;
@@ -401,15 +514,34 @@ int parse_and_check_ips(const char *file_location, const char *country_code,
   ctx.verbose = verbose;
   ctx.quiet = quiet;
   ctx.port_count = port_count;
+  ctx.resume_enabled = resume_enabled;
+  ctx.resume_offset = resume_offset;
+  ctx.rate_limit = rate_limit;
   for (size_t i = 0; i < port_count &&
                      i < (sizeof(ctx.ports) / sizeof(ctx.ports[0]));
        i++) {
     ctx.ports[i] = ports[i];
   }
   pthread_mutex_init(&ctx.range_mutex, NULL);
+  pthread_mutex_init(&ctx.rate_mutex, NULL);
+  pthread_mutex_init(&ctx.checkpoint_mutex, NULL);
   pthread_mutex_init(&ctx.stats_mutex, NULL);
   pthread_mutex_init(&ctx.print_mutex, NULL);
   gettimeofday(&ctx.last_print, NULL);
+  if (ctx.resume_enabled) {
+    gettimeofday(&ctx.last_checkpoint, NULL);
+  }
+
+  if (apply_resume_offset(&ctx) != 0) {
+    printf(COLOR_YELLOW "Resume offset exceeds total IPs.\n" COLOR_RESET);
+    pthread_mutex_destroy(&ctx.range_mutex);
+    pthread_mutex_destroy(&ctx.rate_mutex);
+    pthread_mutex_destroy(&ctx.checkpoint_mutex);
+    pthread_mutex_destroy(&ctx.stats_mutex);
+    pthread_mutex_destroy(&ctx.print_mutex);
+    free(ranges);
+    return 0;
+  }
 
   int worker_count = get_worker_count(workers);
   if (!quiet) {
@@ -435,6 +567,7 @@ int parse_and_check_ips(const char *file_location, const char *country_code,
   }
 
   update_progress(&ctx, 1);
+  checkpoint_update(&ctx, 1);
   if (!quiet && !verbose) {
     printf("\n");
   }
@@ -445,6 +578,8 @@ int parse_and_check_ips(const char *file_location, const char *country_code,
          (unsigned long long)ctx.screenshots);
 
   pthread_mutex_destroy(&ctx.range_mutex);
+  pthread_mutex_destroy(&ctx.rate_mutex);
+  pthread_mutex_destroy(&ctx.checkpoint_mutex);
   pthread_mutex_destroy(&ctx.stats_mutex);
   pthread_mutex_destroy(&ctx.print_mutex);
   free(threads);
@@ -539,6 +674,8 @@ int main(int argc, char **argv) {
   int snapshot_timeout = 60;
   int verbose = 0;
   int quiet = 0;
+  int resume_enabled = 0;
+  int rate_limit = 0;
   int ports[8] = {5900, 5901};
   size_t port_count = 2;
   static struct option long_options[] = {
@@ -547,6 +684,8 @@ int main(int argc, char **argv) {
       {"workers", required_argument, 0, 'w'},
       {"timeout", required_argument, 0, 't'},
       {"ports", required_argument, 0, 'p'},
+      {"resume", no_argument, 0, 'r'},
+      {"rate", required_argument, 0, 'R'},
       {"verbose", no_argument, 0, 'v'},
       {"quiet", no_argument, 0, 'q'},
       {"help", no_argument, 0, 'h'},
@@ -575,7 +714,7 @@ int main(int argc, char **argv) {
     free(country_code);
     return 1;
   }
-  while ((opt = getopt_long(argc, argv, "c:f:w:t:p:vqh", long_options,
+  while ((opt = getopt_long(argc, argv, "c:f:w:t:p:rR:vqh", long_options,
                             &option_index)) != -1) {
     switch (opt) {
     case 'c':
@@ -623,6 +762,21 @@ int main(int argc, char **argv) {
         return 1;
       }
       port_count = (size_t)parsed;
+      break;
+    }
+    case 'r':
+      resume_enabled = 1;
+      break;
+    case 'R': {
+      char *end = NULL;
+      long value = strtol(optarg, &end, 10);
+      if (!end || *end != '\0' || value <= 0 || value > 1000000) {
+        fprintf(stderr, COLOR_RED "Invalid rate limit.\n" COLOR_RESET);
+        free(country_code);
+        free(file_location);
+        return 1;
+      }
+      rate_limit = (int)value;
       break;
     }
     case 'v':
@@ -696,9 +850,24 @@ int main(int argc, char **argv) {
     quiet = 0;
   }
 
+  uint64_t resume_offset = 0;
+  if (resume_enabled) {
+    if (read_resume_offset(".line", &resume_offset) != 0) {
+      fprintf(stderr, COLOR_YELLOW
+                      "Resume requested but no valid .line found. Starting from 0.\n"
+                      COLOR_RESET);
+      resume_offset = 0;
+    } else {
+      printf("Resuming from checkpoint: %llu\n",
+             (unsigned long long)resume_offset);
+    }
+  }
+
   int num_shots = parse_and_check_ips(cleaned_file_location, country_code,
                                       worker_override, snapshot_timeout,
-                                      verbose, quiet, ports, port_count);
+                                      verbose, quiet, ports, port_count,
+                                      resume_enabled, resume_offset,
+                                      rate_limit);
   printf(COLOR_GREEN
          "\nAll done. Enjoy %d new screenshots in this folder\n" COLOR_RESET,
          num_shots);
