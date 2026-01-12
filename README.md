@@ -15,12 +15,47 @@ make all
 ./vncsnatch
 ```
 
+Non-interactive example:
+
+```bash
+./vncsnatch -c DK -f /path/to/IP2LOCATION-LITE-DB1.CSV -w 8 -t 30 -p 5900,5901
+```
+
 ## Dependencies
 
 - libcapability (usually default everywhere)
 - libreadline
 - an [IP2location](https://ip2location.com) lite csv file (can be downloaded for free)
 - [vncsnapshot](https://github.com/shamun/vncsnapshot") to take screenshots
+
+## Options
+
+```
+-c, --country CODE   Two-letter country code (e.g., DK)
+-f, --file PATH      IP2Location CSV file path
+-w, --workers N      Number of worker threads
+-t, --timeout SEC    Snapshot timeout in seconds (default 60)
+-p, --ports LIST     Comma-separated VNC ports (default 5900,5901)
+-r, --resume         Resume from .line checkpoint
+-R, --rate N         Limit scans to N IPs per second
+-v, --verbose        Print per-host progress output
+-q, --quiet          Suppress progress output
+-h, --help           Show this help message
+```
+
+## Notes
+
+- The scanner now runs concurrently and shows a live progress line unless `-v` or `-q` is set.
+- If you want to resume, use `-r` and the `.line` file will be used as a checkpoint offset.
+- If the program has `cap_net_raw`/`cap_net_admin` or runs as root, it can use ICMP to skip offline hosts faster.
+
+## Tests
+
+Run the local protocol regression tests:
+
+```bash
+make test
+```
 
 ## IMPORTANT
 
