@@ -24,17 +24,15 @@ def serve_once(port, mode, v33):
                 pass
 
             if mode in ("frame", "frame-auth"):
-                conn.sendall(b"\x01\x01")
+                if mode == "frame-auth":
+                    conn.sendall(b"\x01\x02")
+                else:
+                    conn.sendall(b"\x01\x01")
                 try:
                     conn.recv(1)
                 except socket.timeout:
                     return
                 if mode == "frame-auth":
-                    conn.sendall(b"\x01\x02")
-                    try:
-                        conn.recv(1)
-                    except socket.timeout:
-                        return
                     conn.sendall(b"\x00" * 16)
                     try:
                         conn.recv(16)
