@@ -50,16 +50,19 @@ Non-interactive example:
 The codebase includes a clean-room `vncgrab` module to replace the external
 `vncsnapshot` dependency. By default the build still uses `vncsnapshot`.
 
-To build without `vncsnapshot`:
+Default builds use the clean-room `vncgrab` module (no external dependency).
+If you want to use `vncsnapshot`, build with `USE_VNCSNAPSHOT=1`.
+
+To build with `vncsnapshot`:
 
 ```bash
-make CFLAGS="-g -Wall -pthread" LDLIBS="-lcap -lreadline -ljpeg -pthread"
+make USE_VNCSNAPSHOT=1
 ```
 
 If you want to keep OpenSSL available for other work, you can still link it:
 
 ```bash
-make USE_OPENSSL=1 CFLAGS="-g -Wall -pthread" LDLIBS="-lcap -lreadline -ljpeg -lcrypto -pthread"
+make USE_OPENSSL=1
 ```
 
 Convenience target:

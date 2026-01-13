@@ -1,12 +1,17 @@
 CC=gcc
 RM=rm -f
 USE_OPENSSL ?= 0
-CFLAGS=-g -Wall -pthread -DUSE_VNCSNAPSHOT
+USE_VNCSNAPSHOT ?= 0
+CFLAGS=-g -Wall -pthread
 LDFLAGS=-g
 LDLIBS=-lcap -lreadline -ljpeg -pthread
 
 ifeq ($(USE_OPENSSL),1)
 	LDLIBS += -lcrypto
+endif
+
+ifeq ($(USE_VNCSNAPSHOT),1)
+	CFLAGS += -DUSE_VNCSNAPSHOT
 endif
 
 SRCS=vncsnatch.c file_utils.c misc_utils.c network_utils.c vncgrab.c des.c
@@ -33,9 +38,9 @@ test:
 				./tests/run_tests.sh
 
 cleanroom:
-				$(MAKE) CFLAGS="-g -Wall -pthread" LDLIBS="-lcap -lreadline -ljpeg -pthread" USE_OPENSSL=$(USE_OPENSSL)
+				$(MAKE) USE_VNCSNAPSHOT=0 USE_OPENSSL=$(USE_OPENSSL)
 
 test-cleanroom:
-				$(MAKE) CFLAGS="-g -Wall -pthread" LDLIBS="-lcap -lreadline -ljpeg -pthread" USE_OPENSSL=$(USE_OPENSSL) test
+				$(MAKE) USE_VNCSNAPSHOT=0 USE_OPENSSL=$(USE_OPENSSL) test
 
 -include .depend
