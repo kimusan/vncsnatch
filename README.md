@@ -40,6 +40,8 @@ Non-interactive example:
 -r, --resume         Resume from .line checkpoint
 -R, --rate N         Limit scans to N IPs per second
 -P, --password PASS  Use PASS for VNC auth (if required)
+-F, --password-file  Read passwords from file (one per line)
+-M, --metadata-dir   Output per-host metadata JSON files
 -b, --allowblank     Allow blank (all black) screenshots
 -B, --ignoreblank    Skip blank (all black) screenshots (default)
 -Q, --quality N      JPEG quality 1-100 (default 100)
@@ -80,6 +82,7 @@ make cleanroom
 - The scanner now runs concurrently and shows a live progress line unless `-v` or `-q` is set.
 - If you want to resume, use `-r` and the `.line` file will be used as a checkpoint offset.
 - If the program has `cap_net_raw`/`cap_net_admin` or runs as root, it can use ICMP to skip offline hosts faster.
+- Metadata is written per detected VNC server in the metadata directory (default `metadata/`).
 
 ## Tests
 

