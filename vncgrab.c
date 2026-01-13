@@ -80,7 +80,7 @@ static int set_timeouts(int fd, int timeout_sec) {
 }
 
 static int write_jpeg(const char *path, int width, int height,
-                      const uint8_t *rgb) {
+                      const uint8_t *rgb, int quality) {
   struct jpeg_compress_struct cinfo;
   struct jpeg_error_mgr jerr;
   FILE *outfile = fopen(path, "wb");
@@ -98,7 +98,7 @@ static int write_jpeg(const char *path, int width, int height,
   cinfo.in_color_space = JCS_RGB;
 
   jpeg_set_defaults(&cinfo);
-  jpeg_set_quality(&cinfo, 90, TRUE);
+  jpeg_set_quality(&cinfo, quality, TRUE);
   jpeg_start_compress(&cinfo, TRUE);
 
   while (cinfo.next_scanline < cinfo.image_height) {
@@ -179,14 +179,19 @@ static int vnc_authenticate(int fd, const char *password) {
 
 int vncgrab_snapshot(const char *ip, int port, const char *password,
                      const char *out_path, int timeout_sec, bool allow_blank,
-                     bool verbose) {
+                     int jpeg_quality, int rect_x, int rect_y, int rect_w,
+                     int rect_h, bool verbose) {
   int fd = -1;
   int result = -1;
   uint8_t *raw = NULL;
   uint8_t *rgb = NULL;
+  uint8_t *crop = NULL;
 
   if (!ip || !out_path || port <= 0 || port > 65535) {
     return -1;
+  }
+  if (jpeg_quality < 1 || jpeg_quality > 100) {
+    jpeg_quality = 90;
   }
 
   fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -330,6 +335,17 @@ int vncgrab_snapshot(const char *ip, int port, const char *password,
 
   uint16_t width = (uint16_t)((init_buf[0] << 8) | init_buf[1]);
   uint16_t height = (uint16_t)((init_buf[2] << 8) | init_buf[3]);
+  int req_x = rect_x < 0 ? 0 : rect_x;
+  int req_y = rect_y < 0 ? 0 : rect_y;
+  int req_w = rect_w <= 0 ? width : rect_w;
+  int req_h = rect_h <= 0 ? height : rect_h;
+
+  if (req_x < 0 || req_y < 0 || req_x >= width || req_y >= height ||
+      req_w <= 0 || req_h <= 0 || req_x + req_w > width ||
+      req_y + req_h > height) {
+    close(fd);
+    return -1;
+  }
   uint32_t name_len = (uint32_t)((init_buf[20] << 24) | (init_buf[21] << 16) |
                                  (init_buf[22] << 8) | init_buf[23]);
   if (name_len > 0) {
@@ -390,10 +406,14 @@ int vncgrab_snapshot(const char *ip, int port, const char *password,
   memset(fb_req, 0, sizeof(fb_req));
   fb_req[0] = 3;
   fb_req[1] = 0;
-  fb_req[6] = (uint8_t)(width >> 8);
-  fb_req[7] = (uint8_t)(width & 0xFF);
-  fb_req[8] = (uint8_t)(height >> 8);
-  fb_req[9] = (uint8_t)(height & 0xFF);
+  fb_req[2] = (uint8_t)(req_x >> 8);
+  fb_req[3] = (uint8_t)(req_x & 0xFF);
+  fb_req[4] = (uint8_t)(req_y >> 8);
+  fb_req[5] = (uint8_t)(req_y & 0xFF);
+  fb_req[6] = (uint8_t)(req_w >> 8);
+  fb_req[7] = (uint8_t)(req_w & 0xFF);
+  fb_req[8] = (uint8_t)(req_h >> 8);
+  fb_req[9] = (uint8_t)(req_h & 0xFF);
   if (write_full(fd, fb_req, sizeof(fb_req)) < 0) {
     close(fd);
     return -1;
@@ -440,6 +460,27 @@ int vncgrab_snapshot(const char *ip, int port, const char *password,
     uint16_t rh = (uint16_t)((rect_hdr[6] << 8) | rect_hdr[7]);
     int32_t encoding = (int32_t)((rect_hdr[8] << 24) | (rect_hdr[9] << 16) |
                                  (rect_hdr[10] << 8) | rect_hdr[11]);
+    if (encoding == 1) {
+      uint8_t copy_buf[4];
+      if (read_full(fd, copy_buf, sizeof(copy_buf)) < 0) {
+        goto cleanup;
+      }
+      uint16_t src_x = (uint16_t)((copy_buf[0] << 8) | copy_buf[1]);
+      uint16_t src_y = (uint16_t)((copy_buf[2] << 8) | copy_buf[3]);
+      for (uint16_t y = 0; y < rh; y++) {
+        for (uint16_t x = 0; x < rw; x++) {
+          size_t dst = ((size_t)(ry + y) * width + (rx + x)) * 3;
+          size_t src = ((size_t)(src_y + y) * width + (src_x + x)) * 3;
+          if (dst + 2 < rgb_len && src + 2 < rgb_len) {
+            rgb[dst] = rgb[src];
+            rgb[dst + 1] = rgb[src + 1];
+            rgb[dst + 2] = rgb[src + 2];
+          }
+        }
+      }
+      continue;
+    }
+
     if (encoding != 0) {
       goto cleanup;
     }
@@ -475,22 +516,37 @@ int vncgrab_snapshot(const char *ip, int port, const char *password,
     raw = NULL;
   }
 
-  if (!allow_blank && is_blank_frame(rgb, rgb_len)) {
+  size_t crop_len = (size_t)req_w * (size_t)req_h * 3;
+  crop = malloc(crop_len);
+  if (!crop) {
+    goto cleanup;
+  }
+  for (int y = 0; y < req_h; y++) {
+    size_t src_row = (size_t)(req_y + y) * width + req_x;
+    size_t dst_row = (size_t)y * req_w;
+    memcpy(crop + dst_row * 3, rgb + src_row * 3, (size_t)req_w * 3);
+  }
+
+  if (!allow_blank && is_blank_frame(crop, crop_len)) {
     goto cleanup;
   }
 
-  if (write_jpeg(out_path, width, height, rgb) < 0) {
+  if (write_jpeg(out_path, req_w, req_h, crop, jpeg_quality) < 0) {
     goto cleanup;
   }
 
   if (verbose) {
-    fprintf(stderr, "Saved snapshot %s (%ux%u)\n", out_path, width, height);
+    fprintf(stderr, "Saved snapshot %s (%dx%d at %d,%d)\n",
+            out_path, req_w, req_h, req_x, req_y);
   }
   result = 0;
 
 cleanup:
   if (raw) {
     free(raw);
+  }
+  if (crop) {
+    free(crop);
   }
   if (rgb) {
     free(rgb);

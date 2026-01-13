@@ -17,8 +17,8 @@ int main(int argc, char **argv) {
     password = argv[4];
   }
 
-  int result =
-      vncgrab_snapshot(host, port, password, outfile, 2, true, false);
+  int result = vncgrab_snapshot(host, port, password, outfile, 2, true, 90,
+                                -1, -1, 0, 0, false);
   if (result != 0) {
     fprintf(stderr, "vncgrab_snapshot failed\n");
     return 1;

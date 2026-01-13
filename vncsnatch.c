@@ -67,6 +67,10 @@ static void print_usage(const char *progname) {
   printf("  -r, --resume         Resume from .line checkpoint\n");
   printf("  -R, --rate N         Limit scans to N IPs per second\n");
   printf("  -P, --password PASS  Use PASS for VNC auth (if required)\n");
+  printf("  -b, --allowblank     Allow blank (all black) screenshots\n");
+  printf("  -B, --ignoreblank    Skip blank (all black) screenshots\n");
+  printf("  -Q, --quality N      JPEG quality 1-100 (default 100)\n");
+  printf("  -x, --rect SPEC      Capture sub-rect (wxh+x+y)\n");
   printf("  -v, --verbose        Print per-host progress output\n");
   printf("  -q, --quiet          Suppress progress output\n");
   printf("  -h, --help           Show this help message\n");
@@ -105,6 +109,7 @@ static int run_vncsnapshot(const char *ip_addr, int port, int timeout_sec);
 static int capture_snapshot(const char *ip_addr, int port, int timeout_sec,
                             int verbose, const char *password);
 static int parse_ports(const char *arg, int *ports, size_t max_ports);
+static int parse_rect(const char *arg, int *x, int *y, int *w, int *h);
 
 typedef struct {
   uint32_t start;
@@ -127,6 +132,12 @@ typedef struct {
   int verbose;
   int quiet;
   const char *password;
+  int allow_blank;
+  int jpeg_quality;
+  int rect_x;
+  int rect_y;
+  int rect_w;
+  int rect_h;
   int ports[8];
   size_t port_count;
   int resume_enabled;
@@ -248,6 +259,28 @@ static int parse_ports(const char *arg, int *ports, size_t max_ports) {
 
   free(copy);
   return count > 0 ? (int)count : -1;
+}
+
+static int parse_rect(const char *arg, int *x, int *y, int *w, int *h) {
+  if (!arg || !x || !y || !w || !h) {
+    return -1;
+  }
+
+  int rx = 0;
+  int ry = 0;
+  int rw = 0;
+  int rh = 0;
+  if (sscanf(arg, "%dx%d+%d+%d", &rw, &rh, &rx, &ry) != 4) {
+    return -1;
+  }
+  if (rw <= 0 || rh <= 0) {
+    return -1;
+  }
+  *x = rx;
+  *y = ry;
+  *w = rw;
+  *h = rh;
+  return 0;
 }
 
 static int read_resume_offset(const char *path, uint64_t *offset_out) {
@@ -449,7 +482,9 @@ static void *scan_worker(void *arg) {
       if ((vnc_state == 1 ||
            (vnc_state == 0 && ctx->password != NULL)) &&
           capture_snapshot(ip_addr, port_used, ctx->snapshot_timeout,
-                           ctx->verbose, ctx->password) == 0) {
+                           ctx->verbose, ctx->password, ctx->allow_blank,
+                           ctx->jpeg_quality, ctx->rect_x, ctx->rect_y,
+                           ctx->rect_w, ctx->rect_h) == 0) {
         took_shot = 1;
       }
     } else if (ctx->verbose) {
@@ -492,7 +527,9 @@ int parse_and_check_ips(const char *file_location, const char *country_code,
                         int workers, int snapshot_timeout, int verbose,
                         int quiet, const int *ports, size_t port_count,
                         int resume_enabled, uint64_t resume_offset,
-                        int rate_limit, const char *password) {
+                        int rate_limit, const char *password, int allow_blank,
+                        int jpeg_quality, int rect_x, int rect_y, int rect_w,
+                        int rect_h) {
   ip_range_t *ranges = NULL;
   size_t range_count = 0;
   uint64_t total_ips = 0;
@@ -525,6 +562,12 @@ int parse_and_check_ips(const char *file_location, const char *country_code,
   ctx.verbose = verbose;
   ctx.quiet = quiet;
   ctx.password = password;
+  ctx.allow_blank = allow_blank;
+  ctx.jpeg_quality = jpeg_quality;
+  ctx.rect_x = rect_x;
+  ctx.rect_y = rect_y;
+  ctx.rect_w = rect_w;
+  ctx.rect_h = rect_h;
   ctx.port_count = port_count;
   ctx.resume_enabled = resume_enabled;
   ctx.resume_offset = resume_offset;
@@ -660,7 +703,9 @@ static int run_vncsnapshot(const char *ip_addr, int port, int timeout_sec) {
 #endif
 
 static int capture_snapshot(const char *ip_addr, int port, int timeout_sec,
-                            int verbose, const char *password) {
+                            int verbose, const char *password, int allow_blank,
+                            int jpeg_quality, int rect_x, int rect_y,
+                            int rect_w, int rect_h) {
   char output[32];
   if (snprintf(output, sizeof(output), "%s.jpg", ip_addr) >=
       (int)sizeof(output)) {
@@ -669,10 +714,17 @@ static int capture_snapshot(const char *ip_addr, int port, int timeout_sec,
 #ifdef USE_VNCSNAPSHOT
   (void)verbose;
   (void)password;
+  (void)allow_blank;
+  (void)jpeg_quality;
+  (void)rect_x;
+  (void)rect_y;
+  (void)rect_w;
+  (void)rect_h;
   return run_vncsnapshot(ip_addr, port, timeout_sec);
 #else
-  return vncgrab_snapshot(ip_addr, port, password, output, timeout_sec, true,
-                          verbose != 0);
+  return vncgrab_snapshot(ip_addr, port, password, output, timeout_sec,
+                          allow_blank != 0, jpeg_quality, rect_x, rect_y,
+                          rect_w, rect_h, verbose != 0);
 #endif
 }
 
@@ -709,6 +761,12 @@ int main(int argc, char **argv) {
   int resume_enabled = 0;
   int rate_limit = 0;
   char *password = NULL;
+  int allow_blank = 1;
+  int jpeg_quality = 100;
+  int rect_x = -1;
+  int rect_y = -1;
+  int rect_w = 0;
+  int rect_h = 0;
   int ports[8] = {5900, 5901};
   size_t port_count = 2;
   static struct option long_options[] = {
@@ -720,6 +778,10 @@ int main(int argc, char **argv) {
       {"resume", no_argument, 0, 'r'},
       {"rate", required_argument, 0, 'R'},
       {"password", required_argument, 0, 'P'},
+      {"allowblank", no_argument, 0, 'b'},
+      {"ignoreblank", no_argument, 0, 'B'},
+      {"quality", required_argument, 0, 'Q'},
+      {"rect", required_argument, 0, 'x'},
       {"verbose", no_argument, 0, 'v'},
       {"quiet", no_argument, 0, 'q'},
       {"help", no_argument, 0, 'h'},
@@ -751,7 +813,7 @@ int main(int argc, char **argv) {
     return 1;
   }
 #endif
-  while ((opt = getopt_long(argc, argv, "c:f:w:t:p:rR:P:vqh", long_options,
+  while ((opt = getopt_long(argc, argv, "c:f:w:t:p:rR:P:bBQ:x:vqh",
                             &option_index)) != -1) {
     switch (opt) {
     case 'c':
@@ -825,6 +887,34 @@ int main(int argc, char **argv) {
         fprintf(stderr, COLOR_RED "Out of memory.\n" COLOR_RESET);
         free(country_code);
         free(file_location);
+        return 1;
+      }
+      break;
+    case 'b':
+      allow_blank = 1;
+      break;
+    case 'B':
+      allow_blank = 0;
+      break;
+    case 'Q': {
+      char *end = NULL;
+      long value = strtol(optarg, &end, 10);
+      if (!end || *end != '\0' || value < 1 || value > 100) {
+        fprintf(stderr, COLOR_RED "Invalid JPEG quality.\n" COLOR_RESET);
+        free(country_code);
+        free(file_location);
+        free(password);
+        return 1;
+      }
+      jpeg_quality = (int)value;
+      break;
+    }
+    case 'x':
+      if (parse_rect(optarg, &rect_x, &rect_y, &rect_w, &rect_h) != 0) {
+        fprintf(stderr, COLOR_RED "Invalid rect spec.\n" COLOR_RESET);
+        free(country_code);
+        free(file_location);
+        free(password);
         return 1;
       }
       break;
@@ -916,7 +1006,9 @@ int main(int argc, char **argv) {
                                       worker_override, snapshot_timeout,
                                       verbose, quiet, ports, port_count,
                                       resume_enabled, resume_offset,
-                                      rate_limit, password);
+                                      rate_limit, password, allow_blank,
+                                      jpeg_quality, rect_x, rect_y, rect_w,
+                                      rect_h);
   printf(COLOR_GREEN
          "\nAll done. Enjoy %d new screenshots in this folder\n" COLOR_RESET,
          num_shots);
