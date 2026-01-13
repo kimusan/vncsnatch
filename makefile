@@ -1,10 +1,16 @@
 CC=gcc
 RM=rm -f
-CFLAGS=-g -Wall -pthread
+USE_OPENSSL ?= 0
+CFLAGS=-g -Wall -pthread -DUSE_VNCSNAPSHOT
 LDFLAGS=-g
-LDLIBS=-lcap -lreadline -pthread
+LDLIBS=-lcap -lreadline -ljpeg -pthread
 
-SRCS=vncsnatch.c file_utils.c misc_utils.c network_utils.c 
+ifeq ($(USE_OPENSSL),1)
+	CFLAGS += -DUSE_OPENSSL
+	LDLIBS += -lcrypto
+endif
+
+SRCS=vncsnatch.c file_utils.c misc_utils.c network_utils.c vncgrab.c
 OBJS=$(subst .c,.o,$(SRCS))
 
 all: vncsnatch

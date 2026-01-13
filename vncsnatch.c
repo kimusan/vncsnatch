@@ -2,6 +2,7 @@
 #include "file_utils.h"
 #include "misc_utils.h"
 #include "network_utils.h"
+#include "vncgrab.h"
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -65,6 +66,7 @@ static void print_usage(const char *progname) {
   printf("  -p, --ports LIST     Comma-separated VNC ports (default 5900,5901)\n");
   printf("  -r, --resume         Resume from .line checkpoint\n");
   printf("  -R, --rate N         Limit scans to N IPs per second\n");
+  printf("  -P, --password PASS  Use PASS for VNC auth (if required)\n");
   printf("  -v, --verbose        Print per-host progress output\n");
   printf("  -q, --quiet          Suppress progress output\n");
   printf("  -h, --help           Show this help message\n");
@@ -97,7 +99,9 @@ int is_command_in_path(const char *command) {
   return 0;
 }
 
-static int run_vncsnapshot(const char *ip_addr, int timeout_sec);
+static int run_vncsnapshot(const char *ip_addr, int port, int timeout_sec);
+static int capture_snapshot(const char *ip_addr, int port, int timeout_sec,
+                            int verbose, const char *password);
 static int parse_ports(const char *arg, int *ports, size_t max_ports);
 
 typedef struct {
@@ -120,6 +124,7 @@ typedef struct {
   int snapshot_timeout;
   int verbose;
   int quiet;
+  const char *password;
   int ports[8];
   size_t port_count;
   int resume_enabled;
@@ -431,14 +436,18 @@ static void *scan_worker(void *arg) {
     int took_shot = 0;
 
     if (online) {
+      int port_used = 0;
       for (size_t i = 0; i < ctx->port_count; i++) {
         vnc_state = get_security(ip_addr, ctx->ports[i], ctx->verbose != 0);
         if (vnc_state >= 0) {
+          port_used = ctx->ports[i];
           break;
         }
       }
-      if (vnc_state == 1 &&
-          run_vncsnapshot(ip_addr, ctx->snapshot_timeout) == 0) {
+      if ((vnc_state == 1 ||
+           (vnc_state == 0 && ctx->password != NULL)) &&
+          capture_snapshot(ip_addr, port_used, ctx->snapshot_timeout,
+                           ctx->verbose, ctx->password) == 0) {
         took_shot = 1;
       }
     } else if (ctx->verbose) {
@@ -481,7 +490,7 @@ int parse_and_check_ips(const char *file_location, const char *country_code,
                         int workers, int snapshot_timeout, int verbose,
                         int quiet, const int *ports, size_t port_count,
                         int resume_enabled, uint64_t resume_offset,
-                        int rate_limit) {
+                        int rate_limit, const char *password) {
   ip_range_t *ranges = NULL;
   size_t range_count = 0;
   uint64_t total_ips = 0;
@@ -513,6 +522,7 @@ int parse_and_check_ips(const char *file_location, const char *country_code,
   ctx.snapshot_timeout = snapshot_timeout;
   ctx.verbose = verbose;
   ctx.quiet = quiet;
+  ctx.password = password;
   ctx.port_count = port_count;
   ctx.resume_enabled = resume_enabled;
   ctx.resume_offset = resume_offset;
@@ -589,13 +599,14 @@ int parse_and_check_ips(const char *file_location, const char *country_code,
 
 char *file_location = NULL;
 char *country_code = NULL;
-static int run_vncsnapshot(const char *ip_addr, int timeout_sec) {
-  char target[32];
+static int run_vncsnapshot(const char *ip_addr, int port, int timeout_sec) {
+  char target[48];
   char output[32];
   char *argv[] = {"vncsnapshot", "-allowblank", target, output, NULL};
   time_t start_time = time(NULL);
 
-  if (snprintf(target, sizeof(target), "%s:0", ip_addr) >= (int)sizeof(target)) {
+  if (snprintf(target, sizeof(target), "%s::%d", ip_addr, port) >=
+      (int)sizeof(target)) {
     return -1;
   }
   if (snprintf(output, sizeof(output), "%s.jpg", ip_addr) >= (int)sizeof(output)) {
@@ -644,6 +655,23 @@ static int run_vncsnapshot(const char *ip_addr, int timeout_sec) {
   }
 }
 
+static int capture_snapshot(const char *ip_addr, int port, int timeout_sec,
+                            int verbose, const char *password) {
+  char output[32];
+  if (snprintf(output, sizeof(output), "%s.jpg", ip_addr) >=
+      (int)sizeof(output)) {
+    return -1;
+  }
+#ifdef USE_VNCSNAPSHOT
+  (void)verbose;
+  (void)password;
+  return run_vncsnapshot(ip_addr, port, timeout_sec);
+#else
+  return vncgrab_snapshot(ip_addr, port, password, output, timeout_sec, true,
+                          verbose != 0);
+#endif
+}
+
 /**
  * Signal handler for cleaning up resources on SIGINT.
  *
@@ -676,6 +704,7 @@ int main(int argc, char **argv) {
   int quiet = 0;
   int resume_enabled = 0;
   int rate_limit = 0;
+  char *password = NULL;
   int ports[8] = {5900, 5901};
   size_t port_count = 2;
   static struct option long_options[] = {
@@ -686,6 +715,7 @@ int main(int argc, char **argv) {
       {"ports", required_argument, 0, 'p'},
       {"resume", no_argument, 0, 'r'},
       {"rate", required_argument, 0, 'R'},
+      {"password", required_argument, 0, 'P'},
       {"verbose", no_argument, 0, 'v'},
       {"quiet", no_argument, 0, 'q'},
       {"help", no_argument, 0, 'h'},
@@ -707,14 +737,17 @@ int main(int argc, char **argv) {
     fprintf(stderr, COLOR_RED "Without this, the IP check will be slow as we "
                               "cannot just ping it.\n\n" COLOR_RESET);
   }
+#ifdef USE_VNCSNAPSHOT
   if (!is_command_in_path("vncsnapshot")) {
     fprintf(stderr, COLOR_RED
             "Error: vncsnapshot is not in the PATH. Please install it "
             "and ensure it is accessible.\n" COLOR_RESET);
     free(country_code);
+    free(password);
     return 1;
   }
-  while ((opt = getopt_long(argc, argv, "c:f:w:t:p:rR:vqh", long_options,
+#endif
+  while ((opt = getopt_long(argc, argv, "c:f:w:t:p:rR:P:vqh", long_options,
                             &option_index)) != -1) {
     switch (opt) {
     case 'c':
@@ -779,6 +812,18 @@ int main(int argc, char **argv) {
       rate_limit = (int)value;
       break;
     }
+    case 'P':
+      if (password) {
+        free(password);
+      }
+      password = strdup(optarg);
+      if (!password) {
+        fprintf(stderr, COLOR_RED "Out of memory.\n" COLOR_RESET);
+        free(country_code);
+        free(file_location);
+        return 1;
+      }
+      break;
     case 'v':
       verbose = 1;
       break;
@@ -867,7 +912,7 @@ int main(int argc, char **argv) {
                                       worker_override, snapshot_timeout,
                                       verbose, quiet, ports, port_count,
                                       resume_enabled, resume_offset,
-                                      rate_limit);
+                                      rate_limit, password);
   printf(COLOR_GREEN
          "\nAll done. Enjoy %d new screenshots in this folder\n" COLOR_RESET,
          num_shots);
@@ -878,5 +923,7 @@ int main(int argc, char **argv) {
     free(cleaned_file_location);
   if (country_code)
     free(country_code);
+  if (password)
+    free(password);
   return 0;
 }

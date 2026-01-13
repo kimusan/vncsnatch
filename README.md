@@ -25,6 +25,7 @@ Non-interactive example:
 
 - libcapability (usually default everywhere)
 - libreadline
+- libjpeg
 - an [IP2location](https://ip2location.com) lite csv file (can be downloaded for free)
 - [vncsnapshot](https://github.com/shamun/vncsnapshot") to take screenshots
 
@@ -38,9 +39,27 @@ Non-interactive example:
 -p, --ports LIST     Comma-separated VNC ports (default 5900,5901)
 -r, --resume         Resume from .line checkpoint
 -R, --rate N         Limit scans to N IPs per second
+-P, --password PASS  Use PASS for VNC auth (if required)
 -v, --verbose        Print per-host progress output
 -q, --quiet          Suppress progress output
 -h, --help           Show this help message
+```
+
+## Clean-room vncgrab (in progress)
+
+The codebase includes a clean-room `vncgrab` module to replace the external
+`vncsnapshot` dependency. By default the build still uses `vncsnapshot`.
+
+To build without `vncsnapshot`:
+
+```bash
+make CFLAGS="-g -Wall -pthread" LDLIBS="-lcap -lreadline -ljpeg -pthread"
+```
+
+If you want VNC password auth in the clean-room grabber, build with OpenSSL:
+
+```bash
+make USE_OPENSSL=1 CFLAGS="-g -Wall -pthread" LDLIBS="-lcap -lreadline -ljpeg -lcrypto -pthread"
 ```
 
 ## Notes
