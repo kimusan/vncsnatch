@@ -99,7 +99,9 @@ int is_command_in_path(const char *command) {
   return 0;
 }
 
+#ifdef USE_VNCSNAPSHOT
 static int run_vncsnapshot(const char *ip_addr, int port, int timeout_sec);
+#endif
 static int capture_snapshot(const char *ip_addr, int port, int timeout_sec,
                             int verbose, const char *password);
 static int parse_ports(const char *arg, int *ports, size_t max_ports);
@@ -599,6 +601,7 @@ int parse_and_check_ips(const char *file_location, const char *country_code,
 
 char *file_location = NULL;
 char *country_code = NULL;
+#ifdef USE_VNCSNAPSHOT
 static int run_vncsnapshot(const char *ip_addr, int port, int timeout_sec) {
   char target[48];
   char output[32];
@@ -654,6 +657,7 @@ static int run_vncsnapshot(const char *ip_addr, int port, int timeout_sec) {
     return -1;
   }
 }
+#endif
 
 static int capture_snapshot(const char *ip_addr, int port, int timeout_sec,
                             int verbose, const char *password) {

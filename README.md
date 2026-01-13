@@ -62,6 +62,12 @@ If you want VNC password auth in the clean-room grabber, build with OpenSSL:
 make USE_OPENSSL=1 CFLAGS="-g -Wall -pthread" LDLIBS="-lcap -lreadline -ljpeg -lcrypto -pthread"
 ```
 
+Convenience target:
+
+```bash
+make cleanroom
+```
+
 ## Notes
 
 - The scanner now runs concurrently and shows a live progress line unless `-v` or `-q` is set.

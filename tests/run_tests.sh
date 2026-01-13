@@ -14,6 +14,11 @@ $cc -g -Wall -I"$root_dir" \
   "$root_dir/network_utils.c" \
   "$root_dir/misc_utils.c" \
   -lcap
+$cc -g -Wall -I"$root_dir" \
+  -o "$bin_dir/test_vncgrab" \
+  "$root_dir/tests/test_vncgrab.c" \
+  "$root_dir/vncgrab.c" \
+  -ljpeg
 
 run_case() {
   local mode=$1
@@ -44,6 +49,28 @@ run_case() {
   rm -f "$ready_file"
 }
 
+run_frame_case() {
+  local port=$1
+  local outfile=$2
+
+  echo "Case: mode=frame expected=jpeg rfb=3.8"
+  local ready_file
+  ready_file=$(mktemp)
+  python3 -u "$root_dir/tests/fake_vnc_server.py" --port "$port" --mode frame >"$ready_file" 2>/dev/null &
+  local server_pid=$!
+  trap 'if [ -n "${server_pid:-}" ]; then kill "$server_pid" 2>/dev/null || true; fi' EXIT
+  for _ in $(seq 1 40); do
+    if grep -q "READY" "$ready_file"; then
+      break
+    fi
+    sleep 0.05
+  done
+  "$bin_dir/test_vncgrab" 127.0.0.1 "$port" "$outfile"
+  wait "$server_pid" || true
+  trap - EXIT
+  rm -f "$ready_file"
+}
+
 echo "Running tests..."
 passed=0
 total=0
@@ -60,6 +87,10 @@ run_case noauth 5908 1 --v33
 passed=$((passed + 1))
 total=$((total + 1))
 run_case auth 5909 0 --v33
+passed=$((passed + 1))
+total=$((total + 1))
+
+run_frame_case 5910 "$bin_dir/out.jpg"
 passed=$((passed + 1))
 total=$((total + 1))
 

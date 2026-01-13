@@ -33,4 +33,7 @@ distclean: clean
 test:
 				./tests/run_tests.sh
 
+cleanroom:
+				$(MAKE) CFLAGS="-g -Wall -pthread" LDLIBS="-lcap -lreadline -ljpeg -pthread" USE_OPENSSL=$(USE_OPENSSL)
+
 -include .depend

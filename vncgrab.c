@@ -1,7 +1,6 @@
 #include "vncgrab.h"
 #include <arpa/inet.h>
 #include <errno.h>
-#include <jpeglib.h>
 #include <netinet/in.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -11,6 +10,7 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
+#include <jpeglib.h>
 
 #ifdef USE_OPENSSL
 #include <openssl/des.h>
@@ -125,12 +125,14 @@ static int is_blank_frame(const uint8_t *rgb, size_t len) {
   return 1;
 }
 
+#ifdef USE_OPENSSL
 static uint8_t reverse_bits(uint8_t value) {
   value = (uint8_t)((value & 0xF0) >> 4 | (value & 0x0F) << 4);
   value = (uint8_t)((value & 0xCC) >> 2 | (value & 0x33) << 2);
   value = (uint8_t)((value & 0xAA) >> 1 | (value & 0x55) << 1);
   return value;
 }
+#endif
 
 static int read_security_result(int fd) {
   uint32_t status = 0;
@@ -188,6 +190,8 @@ static int vnc_authenticate(int fd, const char *password) {
   return read_security_result(fd);
 #else
   (void)password;
+  (void)fd;
+  (void)challenge;
   return -1;
 #endif
 }
