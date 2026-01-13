@@ -41,7 +41,7 @@ Non-interactive example:
 -R, --rate N         Limit scans to N IPs per second
 -P, --password PASS  Use PASS for VNC auth (if required)
 -b, --allowblank     Allow blank (all black) screenshots
--B, --ignoreblank    Skip blank (all black) screenshots
+-B, --ignoreblank    Skip blank (all black) screenshots (default)
 -Q, --quality N      JPEG quality 1-100 (default 100)
 -x, --rect SPEC      Capture sub-rect (wxh+x+y)
 -v, --verbose        Print per-host progress output

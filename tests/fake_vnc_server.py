@@ -23,7 +23,7 @@ def serve_once(port, mode, v33):
             except socket.timeout:
                 pass
 
-            if mode in ("frame", "frame-auth"):
+            if mode in ("frame", "frame-auth", "frame-2x2", "frame-black"):
                 if mode == "frame-auth":
                     conn.sendall(b"\x01\x02")
                 else:
@@ -43,8 +43,12 @@ def serve_once(port, mode, v33):
                     conn.recv(1)
                 except socket.timeout:
                     return
-                width = 1
-                height = 1
+                if mode == "frame-2x2":
+                    width = 2
+                    height = 2
+                else:
+                    width = 1
+                    height = 1
                 server_pf = struct.pack(
                     "!BBBBHHHBBB3s",
                     32,
@@ -67,9 +71,13 @@ def serve_once(port, mode, v33):
                 except socket.timeout:
                     return
                 conn.sendall(b"\x00\x00" + struct.pack("!H", 1))
-                rect_hdr = struct.pack("!HHHHI", 0, 0, 1, 1, 0)
+                rect_hdr = struct.pack("!HHHHI", 0, 0, width, height, 0)
                 conn.sendall(rect_hdr)
-                conn.sendall(b"\x00\x00\xff\x00")
+                if mode == "frame-black":
+                    pixel = b"\x00\x00\x00\x00"
+                else:
+                    pixel = b"\x00\x00\xff\x00"
+                conn.sendall(pixel * (width * height))
                 time.sleep(0.2)
                 return
 
@@ -100,7 +108,7 @@ def serve_once(port, mode, v33):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, required=True)
-    parser.add_argument("--mode", choices=["noauth", "auth", "fail", "frame", "frame-auth"], required=True)
+    parser.add_argument("--mode", choices=["noauth", "auth", "fail", "frame", "frame-auth", "frame-2x2", "frame-black"], required=True)
     parser.add_argument("--v33", action="store_true")
     args = parser.parse_args()
     serve_once(args.port, args.mode, args.v33)

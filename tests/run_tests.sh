@@ -63,6 +63,8 @@ run_frame_case() {
   local outfile=$2
   local mode=${3:-frame}
   local password=${4:-}
+  local rect=${5:-}
+  local allow_blank=${6:-}
 
   echo "Case: mode=$mode expected=jpeg rfb=3.8"
   local ready_file
@@ -76,8 +78,20 @@ run_frame_case() {
     fi
     sleep 0.05
   done
-  if [ -n "$password" ]; then
+  if [ -n "$password" ] && [ -n "$rect" ] && [ -n "$allow_blank" ]; then
+    "$bin_dir/test_vncgrab" 127.0.0.1 "$port" "$outfile" "$password" "$rect" "$allow_blank"
+  elif [ -n "$password" ] && [ -n "$rect" ]; then
+    "$bin_dir/test_vncgrab" 127.0.0.1 "$port" "$outfile" "$password" "$rect"
+  elif [ -n "$password" ] && [ -n "$allow_blank" ]; then
+    "$bin_dir/test_vncgrab" 127.0.0.1 "$port" "$outfile" "$password" "" "$allow_blank"
+  elif [ -n "$rect" ] && [ -n "$allow_blank" ]; then
+    "$bin_dir/test_vncgrab" 127.0.0.1 "$port" "$outfile" "" "$rect" "$allow_blank"
+  elif [ -n "$password" ]; then
     "$bin_dir/test_vncgrab" 127.0.0.1 "$port" "$outfile" "$password"
+  elif [ -n "$rect" ]; then
+    "$bin_dir/test_vncgrab" 127.0.0.1 "$port" "$outfile" "" "$rect"
+  elif [ -n "$allow_blank" ]; then
+    "$bin_dir/test_vncgrab" 127.0.0.1 "$port" "$outfile" "" "" "$allow_blank"
   else
     "$bin_dir/test_vncgrab" 127.0.0.1 "$port" "$outfile"
   fi
@@ -106,6 +120,24 @@ passed=$((passed + 1))
 total=$((total + 1))
 
 run_frame_case 5910 "$bin_dir/out.jpg"
+passed=$((passed + 1))
+total=$((total + 1))
+
+run_frame_case 5912 "$bin_dir/out-rect.jpg" frame-2x2 "" "1x1+1+1"
+if [ ! -s "$bin_dir/out-rect.jpg" ]; then
+  echo "Rect output not created"
+  exit 1
+fi
+rm -f "$bin_dir/out-rect.jpg"
+passed=$((passed + 1))
+total=$((total + 1))
+
+run_frame_case 5913 "$bin_dir/out-black.jpg" frame-black "" "" 0
+if [ -s "$bin_dir/out-black.jpg" ]; then
+  echo "Blank frame should be skipped"
+  exit 1
+fi
+rm -f "$bin_dir/out-black.jpg"
 passed=$((passed + 1))
 total=$((total + 1))
 

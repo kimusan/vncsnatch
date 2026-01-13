@@ -761,7 +761,7 @@ int main(int argc, char **argv) {
   int resume_enabled = 0;
   int rate_limit = 0;
   char *password = NULL;
-  int allow_blank = 1;
+  int allow_blank = 0;
   int jpeg_quality = 100;
   int rect_x = -1;
   int rect_y = -1;
