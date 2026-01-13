@@ -35,4 +35,7 @@ test:
 cleanroom:
 				$(MAKE) CFLAGS="-g -Wall -pthread" LDLIBS="-lcap -lreadline -ljpeg -pthread" USE_OPENSSL=$(USE_OPENSSL)
 
+test-cleanroom:
+				$(MAKE) CFLAGS="-g -Wall -pthread" LDLIBS="-lcap -lreadline -ljpeg -pthread" USE_OPENSSL=$(USE_OPENSSL) test
+
 -include .depend
