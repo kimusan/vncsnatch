@@ -23,12 +23,23 @@ def serve_once(port, mode, v33):
             except socket.timeout:
                 pass
 
-            if mode == "frame":
+            if mode in ("frame", "frame-auth"):
                 conn.sendall(b"\x01\x01")
                 try:
                     conn.recv(1)
                 except socket.timeout:
                     return
+                if mode == "frame-auth":
+                    conn.sendall(b"\x01\x02")
+                    try:
+                        conn.recv(1)
+                    except socket.timeout:
+                        return
+                    conn.sendall(b"\x00" * 16)
+                    try:
+                        conn.recv(16)
+                    except socket.timeout:
+                        return
                 conn.sendall(struct.pack("!I", 0))
                 try:
                     conn.recv(1)
@@ -91,7 +102,7 @@ def serve_once(port, mode, v33):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, required=True)
-    parser.add_argument("--mode", choices=["noauth", "auth", "fail", "frame"], required=True)
+    parser.add_argument("--mode", choices=["noauth", "auth", "fail", "frame", "frame-auth"], required=True)
     parser.add_argument("--v33", action="store_true")
     args = parser.parse_args()
     serve_once(args.port, args.mode, args.v33)
