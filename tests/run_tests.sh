@@ -100,6 +100,35 @@ run_frame_case() {
   rm -f "$ready_file"
 }
 
+run_frame_expect_fail() {
+  local port=$1
+  local outfile=$2
+  local mode=$3
+  local allow_blank=$4
+
+  echo "Case: mode=$mode expected=fail rfb=3.8"
+  local ready_file
+  ready_file=$(mktemp)
+  python3 -u "$root_dir/tests/fake_vnc_server.py" --port "$port" --mode "$mode" >"$ready_file" 2>/dev/null &
+  local server_pid=$!
+  trap 'if [ -n "${server_pid:-}" ]; then kill "$server_pid" 2>/dev/null || true; fi' EXIT
+  for _ in $(seq 1 40); do
+    if grep -q "READY" "$ready_file"; then
+      break
+    fi
+    sleep 0.05
+  done
+
+  if "$bin_dir/test_vncgrab" 127.0.0.1 "$port" "$outfile" "" "" "$allow_blank"; then
+    echo "Expected failure but got success"
+    exit 1
+  fi
+
+  wait "$server_pid" || true
+  trap - EXIT
+  rm -f "$ready_file"
+}
+
 echo "Running tests..."
 passed=0
 total=0
@@ -132,7 +161,7 @@ rm -f "$bin_dir/out-rect.jpg"
 passed=$((passed + 1))
 total=$((total + 1))
 
-run_frame_case 5913 "$bin_dir/out-black.jpg" frame-black "" "" 0
+run_frame_expect_fail 5913 "$bin_dir/out-black.jpg" frame-black 0
 if [ -s "$bin_dir/out-black.jpg" ]; then
   echo "Blank frame should be skipped"
   exit 1
