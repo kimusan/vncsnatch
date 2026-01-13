@@ -6,11 +6,10 @@ LDFLAGS=-g
 LDLIBS=-lcap -lreadline -ljpeg -pthread
 
 ifeq ($(USE_OPENSSL),1)
-	CFLAGS += -DUSE_OPENSSL
 	LDLIBS += -lcrypto
 endif
 
-SRCS=vncsnatch.c file_utils.c misc_utils.c network_utils.c vncgrab.c
+SRCS=vncsnatch.c file_utils.c misc_utils.c network_utils.c vncgrab.c des.c
 OBJS=$(subst .c,.o,$(SRCS))
 
 all: vncsnatch

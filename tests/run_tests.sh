@@ -18,7 +18,6 @@ $cc -g -Wall -I"$root_dir" \
 vncgrab_cflags=()
 vncgrab_ldflags=(-ljpeg)
 if [ "${USE_OPENSSL:-0}" = "1" ]; then
-  vncgrab_cflags+=(-DUSE_OPENSSL)
   vncgrab_ldflags+=(-lcrypto)
 fi
 
@@ -27,6 +26,7 @@ $cc -g -Wall -I"$root_dir" \
   -o "$bin_dir/test_vncgrab" \
   "$root_dir/tests/test_vncgrab.c" \
   "$root_dir/vncgrab.c" \
+  "$root_dir/des.c" \
   "${vncgrab_ldflags[@]}"
 
 run_case() {

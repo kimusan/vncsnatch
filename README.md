@@ -56,7 +56,7 @@ To build without `vncsnapshot`:
 make CFLAGS="-g -Wall -pthread" LDLIBS="-lcap -lreadline -ljpeg -pthread"
 ```
 
-If you want VNC password auth in the clean-room grabber, build with OpenSSL:
+If you want to keep OpenSSL available for other work, you can still link it:
 
 ```bash
 make USE_OPENSSL=1 CFLAGS="-g -Wall -pthread" LDLIBS="-lcap -lreadline -ljpeg -lcrypto -pthread"

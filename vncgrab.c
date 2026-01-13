@@ -1,3 +1,4 @@
+#include "des.h"
 #include "vncgrab.h"
 #include <arpa/inet.h>
 #include <errno.h>
@@ -11,10 +12,6 @@
 #include <sys/time.h>
 #include <unistd.h>
 #include <jpeglib.h>
-
-#ifdef USE_OPENSSL
-#include <openssl/des.h>
-#endif
 
 typedef struct {
   uint8_t bits_per_pixel;
@@ -125,14 +122,12 @@ static int is_blank_frame(const uint8_t *rgb, size_t len) {
   return 1;
 }
 
-#ifdef USE_OPENSSL
 static uint8_t reverse_bits(uint8_t value) {
   value = (uint8_t)((value & 0xF0) >> 4 | (value & 0x0F) << 4);
   value = (uint8_t)((value & 0xCC) >> 2 | (value & 0x33) << 2);
   value = (uint8_t)((value & 0xAA) >> 1 | (value & 0x55) << 1);
   return value;
 }
-#endif
 
 static int read_security_result(int fd) {
   uint32_t status = 0;
@@ -165,35 +160,21 @@ static int vnc_authenticate(int fd, const char *password) {
     return -1;
   }
 
-#ifdef USE_OPENSSL
   uint8_t key_bytes[8] = {0};
   size_t pass_len = strlen(password);
   for (size_t i = 0; i < 8 && i < pass_len; i++) {
     key_bytes[i] = reverse_bits((uint8_t)password[i]);
   }
 
-  DES_cblock key;
-  DES_key_schedule schedule;
-  memcpy(key, key_bytes, sizeof(key));
-  DES_set_key_unchecked(&key, &schedule);
-
   uint8_t response[16];
-  DES_ecb_encrypt((const_DES_cblock *)challenge, (DES_cblock *)response,
-                  &schedule, DES_ENCRYPT);
-  DES_ecb_encrypt((const_DES_cblock *)(challenge + 8),
-                  (DES_cblock *)(response + 8), &schedule, DES_ENCRYPT);
+  des_encrypt_block(key_bytes, challenge, response);
+  des_encrypt_block(key_bytes, challenge + 8, response + 8);
 
   if (write_full(fd, response, sizeof(response)) < 0) {
     return -1;
   }
 
   return read_security_result(fd);
-#else
-  (void)password;
-  (void)fd;
-  (void)challenge;
-  return -1;
-#endif
 }
 
 int vncgrab_snapshot(const char *ip, int port, const char *password,
