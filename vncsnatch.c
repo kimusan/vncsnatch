@@ -153,6 +153,8 @@ typedef struct {
   const char *metadata_dir;
   const char *country_code;
   const char *country_name;
+  int ping_available;
+  int spinner_index;
   int ports[8];
   size_t port_count;
   int resume_enabled;
@@ -398,7 +400,8 @@ static void json_escape(FILE *file, const char *value) {
 
 static void write_metadata(const scan_context_t *ctx, const char *ip_addr,
                            int port, int vnc_state, int online,
-                           const char *password_used, int screenshot_ok) {
+                           int online_known, const char *password_used,
+                           int screenshot_ok) {
   if (!ctx->metadata_dir) {
     return;
   }
@@ -427,7 +430,11 @@ static void write_metadata(const scan_context_t *ctx, const char *ip_addr,
   fprintf(file, "  \"country_name\": \"");
   json_escape(file, ctx->country_name ? ctx->country_name : "");
   fprintf(file, "\",\n");
-  fprintf(file, "  \"online\": %s,\n", online ? "true" : "false");
+  if (!online_known) {
+    fprintf(file, "  \"online\": null,\n");
+  } else {
+    fprintf(file, "  \"online\": %s,\n", online ? "true" : "false");
+  }
   fprintf(file, "  \"vnc_detected\": %s,\n", vnc_state >= 0 ? "true" : "false");
   fprintf(file, "  \"auth_required\": %s,\n", vnc_state == 0 ? "true" : "false");
   fprintf(file, "  \"auth_success\": %s,\n",
@@ -601,16 +608,33 @@ static void update_progress(scan_context_t *ctx, int force) {
   pthread_mutex_unlock(&ctx->stats_mutex);
 
   double pct = total ? (double)scanned * 100.0 / (double)total : 0.0;
-  printf("\r\033[2KProgress: %llu/%llu (%.1f%%) online:%llu vnc:%llu noauth:%llu auth:%llu/%llu shots:%llu",
-         (unsigned long long)scanned,
-         (unsigned long long)total,
-         pct,
-         (unsigned long long)online,
-         (unsigned long long)vnc_found,
-         (unsigned long long)vnc_noauth,
-         (unsigned long long)auth_success,
-         (unsigned long long)auth_attempts,
-         (unsigned long long)shots);
+  static const char spinner[] = "|/-\\";
+  char spin = spinner[ctx->spinner_index % 4];
+  ctx->spinner_index++;
+  if (!ctx->ping_available) {
+    printf("\r\033[2K[%c] %llu/%llu (%.1f%%) online:n/a vnc:%llu noauth:%llu auth:%llu/%llu shots:%llu",
+           spin,
+           (unsigned long long)scanned,
+           (unsigned long long)total,
+           pct,
+           (unsigned long long)vnc_found,
+           (unsigned long long)vnc_noauth,
+           (unsigned long long)auth_success,
+           (unsigned long long)auth_attempts,
+           (unsigned long long)shots);
+  } else {
+    printf("\r\033[2K[%c] %llu/%llu (%.1f%%) online:%llu vnc:%llu noauth:%llu auth:%llu/%llu shots:%llu",
+           spin,
+           (unsigned long long)scanned,
+           (unsigned long long)total,
+           pct,
+           (unsigned long long)online,
+           (unsigned long long)vnc_found,
+           (unsigned long long)vnc_noauth,
+           (unsigned long long)auth_success,
+           (unsigned long long)auth_attempts,
+           (unsigned long long)shots);
+  }
   fflush(stdout);
   ctx->last_print = now;
   pthread_mutex_unlock(&ctx->print_mutex);
@@ -641,7 +665,8 @@ static void *scan_worker(void *arg) {
 
     rate_limit_wait(ctx);
 
-    int online = is_ip_up(ip_addr);
+    int online_known = ctx->ping_available != 0;
+    int online = online_known ? is_ip_up(ip_addr) : 1;
     int vnc_state = -1;
     int took_shot = 0;
     const char *password_used = NULL;
@@ -682,7 +707,7 @@ static void *scan_worker(void *arg) {
           }
         }
       }
-    } else if (ctx->verbose) {
+    } else if (ctx->verbose && online_known) {
       pthread_mutex_lock(&ctx->print_mutex);
       printf("not online. Skipping!\n");
       pthread_mutex_unlock(&ctx->print_mutex);
@@ -690,7 +715,7 @@ static void *scan_worker(void *arg) {
 
     pthread_mutex_lock(&ctx->stats_mutex);
     ctx->scanned_ips++;
-    if (online) {
+    if (online && online_known) {
       ctx->online_hosts++;
     }
     if (vnc_state >= 0) {
@@ -705,8 +730,8 @@ static void *scan_worker(void *arg) {
     pthread_mutex_unlock(&ctx->stats_mutex);
 
     if (vnc_state >= 0) {
-      write_metadata(ctx, ip_addr, port_used, vnc_state, online, password_used,
-                     took_shot);
+      write_metadata(ctx, ip_addr, port_used, vnc_state, online, online_known,
+                     password_used, took_shot);
     }
 
     update_progress(ctx, 0);
@@ -775,6 +800,8 @@ int parse_and_check_ips(const char *file_location, const char *country_code,
   ctx.metadata_dir = metadata_dir;
   ctx.country_code = country_code;
   ctx.country_name = country_name;
+  ctx.ping_available = has_required_capabilities() ? 1 : 0;
+  ctx.spinner_index = 0;
   ctx.port_count = port_count;
   ctx.resume_enabled = resume_enabled;
   ctx.resume_offset = resume_offset;

@@ -21,6 +21,12 @@ Non-interactive example:
 ./vncsnatch -c DK -f /path/to/IP2LOCATION-LITE-DB1.CSV -w 8 -t 30 -p 5900,5901
 ```
 
+Password list + metadata example:
+
+```bash
+./vncsnatch -c DK -f /path/to/IP2LOCATION-LITE-DB1.CSV -F passwords.txt -M metadata
+```
+
 ## Dependencies
 
 - libcapability (usually default everywhere)
@@ -81,8 +87,9 @@ make cleanroom
 
 - The scanner now runs concurrently and shows a live progress line unless `-v` or `-q` is set.
 - If you want to resume, use `-r` and the `.line` file will be used as a checkpoint offset.
-- If the program has `cap_net_raw`/`cap_net_admin` or runs as root, it can use ICMP to skip offline hosts faster.
+- If the program has `cap_net_raw`/`cap_net_admin` or runs as root, it can use ICMP to skip offline hosts faster. Without those capabilities, the "online" stat is not available.
 - Metadata is written per detected VNC server in the metadata directory (default `metadata/`).
+- Password files are read line-by-line; blank lines and lines starting with `#` are ignored.
 
 ## Tests
 
