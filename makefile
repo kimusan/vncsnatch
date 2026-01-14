@@ -30,6 +30,7 @@ depend: .depend
 
 clean:
 				$(RM) $(OBJS)
+				$(RM) -r tests/bin
 
 distclean: clean
 				$(RM) *~ .depend
