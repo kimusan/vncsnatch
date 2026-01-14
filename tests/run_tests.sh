@@ -14,6 +14,9 @@ $cc -g -Wall -I"$root_dir" \
   "$root_dir/network_utils.c" \
   "$root_dir/misc_utils.c" \
   -lcap
+$cc -g -Wall -I"$root_dir" \
+  -o "$bin_dir/test_resume" \
+  "$root_dir/tests/test_resume.c"
 
 vncgrab_cflags=()
 vncgrab_ldflags=(-ljpeg)
@@ -145,6 +148,11 @@ run_case noauth 5908 1 --v33
 passed=$((passed + 1))
 total=$((total + 1))
 run_case auth 5909 0 --v33
+passed=$((passed + 1))
+total=$((total + 1))
+
+echo "Case: resume parsing"
+"$bin_dir/test_resume"
 passed=$((passed + 1))
 total=$((total + 1))
 
