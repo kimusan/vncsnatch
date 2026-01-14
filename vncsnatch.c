@@ -167,7 +167,10 @@ typedef struct {
   int ui_initialized;
   time_t start_time;
   int worker_count;
-  char recent_hits[5][64];
+  struct {
+    char label[64];
+    int is_vnc;
+  } recent_hits[5];
   int recent_hit_count;
   int recent_hit_index;
   const cidr_t *allow_cidrs;
@@ -630,14 +633,16 @@ static void write_results(scan_context_t *ctx, const char *ip_addr, int port,
 }
 
 static void record_recent_hit(scan_context_t *ctx, const char *ip_addr,
-                              int port) {
+                              int port, int vnc_state) {
   if (port <= 0) {
     return;
   }
   pthread_mutex_lock(&ctx->print_mutex);
-  snprintf(ctx->recent_hits[ctx->recent_hit_index],
-           sizeof(ctx->recent_hits[ctx->recent_hit_index]), "%s:%d", ip_addr,
+  snprintf(ctx->recent_hits[ctx->recent_hit_index].label,
+           sizeof(ctx->recent_hits[ctx->recent_hit_index].label), "%s:%d",
+           ip_addr,
            port);
+  ctx->recent_hits[ctx->recent_hit_index].is_vnc = vnc_state >= 0;
   ctx->recent_hit_index = (ctx->recent_hit_index + 1) %
                           (int)(sizeof(ctx->recent_hits) /
                                 sizeof(ctx->recent_hits[0]));
@@ -794,13 +799,18 @@ static void update_progress(scan_context_t *ctx, int force) {
   uint64_t auth_success = ctx->auth_success;
   int recent_count = ctx->recent_hit_count;
   int recent_index = ctx->recent_hit_index;
-  char recent[5][64];
+  struct {
+    char label[64];
+    int is_vnc;
+  } recent[5];
   for (int i = 0; i < recent_count; i++) {
     int idx = (recent_index - 1 - i);
     if (idx < 0) {
       idx += (int)(sizeof(ctx->recent_hits) / sizeof(ctx->recent_hits[0]));
     }
-    snprintf(recent[i], sizeof(recent[i]), "%s", ctx->recent_hits[idx]);
+    snprintf(recent[i].label, sizeof(recent[i].label), "%s",
+             ctx->recent_hits[idx].label);
+    recent[i].is_vnc = ctx->recent_hits[idx].is_vnc;
   }
   pthread_mutex_unlock(&ctx->stats_mutex);
 
@@ -878,9 +888,10 @@ static void update_progress(scan_context_t *ctx, int force) {
   }
 
   if (recent_count > 0) {
-    printf("  hits:");
+    printf("  recent:");
     for (int i = 0; i < recent_count; i++) {
-      printf(" %s", recent[i]);
+      const char *color = recent[i].is_vnc ? COLOR_GREEN : COLOR_RED;
+      printf(" %s%s%s", color, recent[i].label, COLOR_RESET);
     }
   }
   printf("\n");
@@ -1000,8 +1011,10 @@ static void *scan_worker(void *arg) {
     }
     pthread_mutex_unlock(&ctx->stats_mutex);
 
+    if (online_known && online) {
+      record_recent_hit(ctx, ip_addr, port_used, vnc_state);
+    }
     if (vnc_state >= 0) {
-      record_recent_hit(ctx, ip_addr, port_used);
       write_metadata(ctx, ip_addr, port_used, vnc_state, online, online_known,
                      password_used, took_shot);
       write_results(ctx, ip_addr, port_used, vnc_state, online, online_known,
