@@ -48,6 +48,10 @@ Password list + metadata example:
 -P, --password PASS  Use PASS for VNC auth (if required)
 -F, --password-file  Read passwords from file (one per line)
 -M, --metadata-dir   Output per-host metadata JSON files
+-A, --allow-cidr     Comma-separated CIDR allowlist
+-D, --deny-cidr      Comma-separated CIDR denylist
+-T, --delay-attempts Delay between password attempts (ms)
+-o, --results PATH   Write results summary to PATH
 -b, --allowblank     Allow blank (all black) screenshots
 -B, --ignoreblank    Skip blank (all black) screenshots (default)
 -Q, --quality N      JPEG quality 1-100 (default 100)

@@ -70,6 +70,10 @@ static void print_usage(const char *progname) {
   printf("  -P, --password PASS  Use PASS for VNC auth (if required)\n");
   printf("  -F, --password-file  Read passwords from file (one per line)\n");
   printf("  -M, --metadata-dir   Output per-host metadata JSON files\n");
+  printf("  -A, --allow-cidr     Comma-separated CIDR allowlist\n");
+  printf("  -D, --deny-cidr      Comma-separated CIDR denylist\n");
+  printf("  -T, --delay-attempts Delay between password attempts (ms)\n");
+  printf("  -o, --results PATH   Write results summary to PATH\n");
   printf("  -b, --allowblank     Allow blank (all black) screenshots\n");
   printf("  -B, --ignoreblank    Skip blank (all black) screenshots\n");
   printf("  -Q, --quality N      JPEG quality 1-100 (default 100)\n");
@@ -122,6 +126,11 @@ typedef struct {
 } password_list_t;
 
 typedef struct {
+  uint32_t network;
+  uint32_t mask;
+} cidr_t;
+
+typedef struct {
   uint32_t start;
   uint32_t end;
 } ip_range_t;
@@ -155,6 +164,14 @@ typedef struct {
   const char *country_name;
   int ping_available;
   int spinner_index;
+  const cidr_t *allow_cidrs;
+  size_t allow_cidr_count;
+  const cidr_t *deny_cidrs;
+  size_t deny_cidr_count;
+  int auth_delay_ms;
+  FILE *results_file;
+  int results_jsonl;
+  pthread_mutex_t results_mutex;
   int ports[64];
   size_t port_count;
   int resume_enabled;
@@ -310,6 +327,87 @@ static int parse_rect(const char *arg, int *x, int *y, int *w, int *h) {
   return 0;
 }
 
+static int parse_cidr(const char *arg, cidr_t *out) {
+  if (!arg || !out) {
+    return -1;
+  }
+
+  char buf[64];
+  const char *slash = strchr(arg, '/');
+  if (!slash) {
+    return -1;
+  }
+  size_t ip_len = (size_t)(slash - arg);
+  if (ip_len == 0 || ip_len >= sizeof(buf)) {
+    return -1;
+  }
+  memcpy(buf, arg, ip_len);
+  buf[ip_len] = '\0';
+
+  char *end = NULL;
+  long prefix = strtol(slash + 1, &end, 10);
+  if (!end || *end != '\0' || prefix < 0 || prefix > 32) {
+    return -1;
+  }
+
+  struct in_addr addr;
+  if (inet_pton(AF_INET, buf, &addr) != 1) {
+    return -1;
+  }
+  uint32_t ip = ntohl(addr.s_addr);
+  uint32_t mask = prefix == 0 ? 0 : (0xFFFFFFFFu << (32 - prefix));
+  out->mask = mask;
+  out->network = ip & mask;
+  return 0;
+}
+
+static int parse_cidr_list(const char *arg, cidr_t **list_out,
+                           size_t *count_out) {
+  if (!arg || !list_out || !count_out) {
+    return -1;
+  }
+
+  char *copy = strdup(arg);
+  if (!copy) {
+    return -1;
+  }
+
+  size_t count = 0;
+  cidr_t *list = NULL;
+  char *token = strtok(copy, ",");
+  while (token) {
+    cidr_t cidr;
+    if (parse_cidr(token, &cidr) != 0) {
+      free(list);
+      free(copy);
+      return -1;
+    }
+    cidr_t *next = realloc(list, (count + 1) * sizeof(*list));
+    if (!next) {
+      free(list);
+      free(copy);
+      return -1;
+    }
+    list = next;
+    list[count++] = cidr;
+    token = strtok(NULL, ",");
+  }
+
+  free(copy);
+  *list_out = list;
+  *count_out = count;
+  return 0;
+}
+
+static int ip_in_cidrs(uint32_t ip, const cidr_t *list, size_t count) {
+  for (size_t i = 0; i < count; i++) {
+    if ((ip & list[i].mask) == list[i].network) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
 static void free_password_list(password_list_t *list) {
   if (!list) {
     return;
@@ -459,6 +557,70 @@ static void write_metadata(const scan_context_t *ctx, const char *ip_addr,
   fputs("}\n", file);
 
   fclose(file);
+}
+
+static void write_results(scan_context_t *ctx, const char *ip_addr, int port,
+                          int vnc_state, int online, int online_known,
+                          const char *password_used, int screenshot_ok) {
+  if (!ctx->results_file) {
+    return;
+  }
+
+  pthread_mutex_lock(&ctx->results_mutex);
+  if (ctx->results_jsonl) {
+    fprintf(ctx->results_file, "{\"ip\":\"");
+    json_escape(ctx->results_file, ip_addr);
+    fprintf(ctx->results_file, "\",\"port\":%d,", port);
+    fprintf(ctx->results_file, "\"country_code\":\"");
+    json_escape(ctx->results_file, ctx->country_code ? ctx->country_code : "");
+    fprintf(ctx->results_file, "\",\"country_name\":\"");
+    json_escape(ctx->results_file, ctx->country_name ? ctx->country_name : "");
+    fprintf(ctx->results_file, "\",\"online\":");
+    if (!online_known) {
+      fprintf(ctx->results_file, "null");
+    } else {
+      fprintf(ctx->results_file, online ? "true" : "false");
+    }
+    fprintf(ctx->results_file, ",\"auth_required\":%s",
+            vnc_state == 0 ? "true" : "false");
+    fprintf(ctx->results_file, ",\"auth_success\":%s",
+            password_used ? "true" : "false");
+    fprintf(ctx->results_file, ",\"password_used\":");
+    if (password_used) {
+      fprintf(ctx->results_file, "\"");
+      json_escape(ctx->results_file, password_used);
+      fprintf(ctx->results_file, "\"");
+    } else {
+      fprintf(ctx->results_file, "null");
+    }
+    fprintf(ctx->results_file, ",\"screenshot_saved\":%s}\n",
+            screenshot_ok ? "true" : "false");
+  } else {
+    if (!online_known) {
+      fprintf(ctx->results_file, "%s,%d,%s,%s,,%s,%s,%s,%s\n",
+              ip_addr,
+              port,
+              ctx->country_code ? ctx->country_code : "",
+              ctx->country_name ? ctx->country_name : "",
+              vnc_state == 0 ? "true" : "false",
+              password_used ? "true" : "false",
+              password_used ? password_used : "",
+              screenshot_ok ? "true" : "false");
+    } else {
+      fprintf(ctx->results_file, "%s,%d,%s,%s,%s,%s,%s,%s,%s\n",
+              ip_addr,
+              port,
+              ctx->country_code ? ctx->country_code : "",
+              ctx->country_name ? ctx->country_name : "",
+              online ? "true" : "false",
+              vnc_state == 0 ? "true" : "false",
+              password_used ? "true" : "false",
+              password_used ? password_used : "",
+              screenshot_ok ? "true" : "false");
+    }
+  }
+  fflush(ctx->results_file);
+  pthread_mutex_unlock(&ctx->results_mutex);
 }
 
 static int read_resume_offset(const char *path, uint64_t *offset_out) {
@@ -649,6 +811,25 @@ static void *scan_worker(void *arg) {
     struct in_addr ip_addr_struct;
     ip_addr_struct.s_addr = htonl(ip);
 
+    if (ctx->allow_cidr_count > 0 &&
+        !ip_in_cidrs(ip, ctx->allow_cidrs, ctx->allow_cidr_count)) {
+      pthread_mutex_lock(&ctx->stats_mutex);
+      ctx->scanned_ips++;
+      pthread_mutex_unlock(&ctx->stats_mutex);
+      update_progress(ctx, 0);
+      checkpoint_update(ctx, 0);
+      continue;
+    }
+    if (ctx->deny_cidr_count > 0 &&
+        ip_in_cidrs(ip, ctx->deny_cidrs, ctx->deny_cidr_count)) {
+      pthread_mutex_lock(&ctx->stats_mutex);
+      ctx->scanned_ips++;
+      pthread_mutex_unlock(&ctx->stats_mutex);
+      update_progress(ctx, 0);
+      checkpoint_update(ctx, 0);
+      continue;
+    }
+
     if (!inet_ntop(AF_INET, &ip_addr_struct, ip_addr, sizeof(ip_addr))) {
       pthread_mutex_lock(&ctx->stats_mutex);
       ctx->scanned_ips++;
@@ -705,6 +886,9 @@ static void *scan_worker(void *arg) {
             pthread_mutex_unlock(&ctx->stats_mutex);
             break;
           }
+          if (ctx->auth_delay_ms > 0) {
+            usleep((useconds_t)ctx->auth_delay_ms * 1000);
+          }
         }
       }
     } else if (ctx->verbose && online_known) {
@@ -732,6 +916,8 @@ static void *scan_worker(void *arg) {
     if (vnc_state >= 0) {
       write_metadata(ctx, ip_addr, port_used, vnc_state, online, online_known,
                      password_used, took_shot);
+      write_results(ctx, ip_addr, port_used, vnc_state, online, online_known,
+                    password_used, took_shot);
     }
 
     update_progress(ctx, 0);
@@ -755,7 +941,10 @@ int parse_and_check_ips(const char *file_location, const char *country_code,
                         int rate_limit, const password_list_t *passwords,
                         int allow_blank, int jpeg_quality, int rect_x,
                         int rect_y, int rect_w, int rect_h,
-                        const char *metadata_dir) {
+                        const char *metadata_dir, const cidr_t *allow_cidrs,
+                        size_t allow_cidr_count, const cidr_t *deny_cidrs,
+                        size_t deny_cidr_count, int auth_delay_ms,
+                        FILE *results_file, int results_jsonl) {
   ip_range_t *ranges = NULL;
   size_t range_count = 0;
   uint64_t total_ips = 0;
@@ -802,6 +991,14 @@ int parse_and_check_ips(const char *file_location, const char *country_code,
   ctx.country_name = country_name;
   ctx.ping_available = has_required_capabilities() ? 1 : 0;
   ctx.spinner_index = 0;
+  ctx.allow_cidrs = allow_cidrs;
+  ctx.allow_cidr_count = allow_cidr_count;
+  ctx.deny_cidrs = deny_cidrs;
+  ctx.deny_cidr_count = deny_cidr_count;
+  ctx.auth_delay_ms = auth_delay_ms;
+  ctx.results_file = results_file;
+  ctx.results_jsonl = results_jsonl;
+  pthread_mutex_init(&ctx.results_mutex, NULL);
   ctx.port_count = port_count;
   ctx.resume_enabled = resume_enabled;
   ctx.resume_offset = resume_offset;
@@ -872,6 +1069,7 @@ int parse_and_check_ips(const char *file_location, const char *country_code,
   pthread_mutex_destroy(&ctx.checkpoint_mutex);
   pthread_mutex_destroy(&ctx.stats_mutex);
   pthread_mutex_destroy(&ctx.print_mutex);
+  pthread_mutex_destroy(&ctx.results_mutex);
   free(threads);
   free(ranges);
   free(country_name);
@@ -1005,6 +1203,10 @@ int main(int argc, char **argv) {
   int rect_y = -1;
   int rect_w = 0;
   int rect_h = 0;
+  int auth_delay_ms = 0;
+  char *allow_cidr_arg = NULL;
+  char *deny_cidr_arg = NULL;
+  char *results_path = NULL;
   int ports[64] = {5900, 5901};
   size_t port_count = 2;
   static struct option long_options[] = {
@@ -1018,6 +1220,10 @@ int main(int argc, char **argv) {
       {"password", required_argument, 0, 'P'},
       {"password-file", required_argument, 0, 'F'},
       {"metadata-dir", required_argument, 0, 'M'},
+      {"allow-cidr", required_argument, 0, 'A'},
+      {"deny-cidr", required_argument, 0, 'D'},
+      {"delay-attempts", required_argument, 0, 'T'},
+      {"results", required_argument, 0, 'o'},
       {"allowblank", no_argument, 0, 'b'},
       {"ignoreblank", no_argument, 0, 'B'},
       {"quality", required_argument, 0, 'Q'},
@@ -1053,7 +1259,7 @@ int main(int argc, char **argv) {
     return 1;
   }
 #endif
-  while ((opt = getopt_long(argc, argv, "c:f:w:t:p:rR:P:F:M:bBQ:x:vqh",
+  while ((opt = getopt_long(argc, argv, "c:f:w:t:p:rR:P:F:M:A:D:T:o:bBQ:x:vqh",
                             long_options, &option_index)) != -1) {
     switch (opt) {
     case 'c':
@@ -1145,6 +1351,67 @@ int main(int argc, char **argv) {
       break;
     case 'M':
       metadata_dir = optarg;
+      break;
+    case 'A':
+      if (allow_cidr_arg) {
+        free(allow_cidr_arg);
+      }
+      allow_cidr_arg = strdup(optarg);
+      if (!allow_cidr_arg) {
+        fprintf(stderr, COLOR_RED "Out of memory.\n" COLOR_RESET);
+        free(country_code);
+        free(file_location);
+        free(password);
+        free(password_file);
+        return 1;
+      }
+      break;
+    case 'D':
+      if (deny_cidr_arg) {
+        free(deny_cidr_arg);
+      }
+      deny_cidr_arg = strdup(optarg);
+      if (!deny_cidr_arg) {
+        fprintf(stderr, COLOR_RED "Out of memory.\n" COLOR_RESET);
+        free(country_code);
+        free(file_location);
+        free(password);
+        free(password_file);
+        free(allow_cidr_arg);
+        return 1;
+      }
+      break;
+    case 'T': {
+      char *end = NULL;
+      long value = strtol(optarg, &end, 10);
+      if (!end || *end != '\0' || value < 0 || value > 600000) {
+        fprintf(stderr, COLOR_RED "Invalid delay value.\n" COLOR_RESET);
+        free(country_code);
+        free(file_location);
+        free(password);
+        free(password_file);
+        free(allow_cidr_arg);
+        free(deny_cidr_arg);
+        return 1;
+      }
+      auth_delay_ms = (int)value;
+      break;
+    }
+    case 'o':
+      if (results_path) {
+        free(results_path);
+      }
+      results_path = strdup(optarg);
+      if (!results_path) {
+        fprintf(stderr, COLOR_RED "Out of memory.\n" COLOR_RESET);
+        free(country_code);
+        free(file_location);
+        free(password);
+        free(password_file);
+        free(allow_cidr_arg);
+        free(deny_cidr_arg);
+        return 1;
+      }
       break;
     case 'b':
       allow_blank = 1;
@@ -1245,6 +1512,65 @@ int main(int argc, char **argv) {
     quiet = 0;
   }
 
+  cidr_t *allow_cidrs = NULL;
+  size_t allow_cidr_count = 0;
+  if (allow_cidr_arg) {
+    if (parse_cidr_list(allow_cidr_arg, &allow_cidrs, &allow_cidr_count) != 0) {
+      fprintf(stderr, COLOR_RED "Invalid allow CIDR list.\n" COLOR_RESET);
+      free(country_code);
+      free(file_location);
+      free(password);
+      free(password_file);
+      free(allow_cidr_arg);
+      free(deny_cidr_arg);
+      return 1;
+    }
+  }
+
+  cidr_t *deny_cidrs = NULL;
+  size_t deny_cidr_count = 0;
+  if (deny_cidr_arg) {
+    if (parse_cidr_list(deny_cidr_arg, &deny_cidrs, &deny_cidr_count) != 0) {
+      fprintf(stderr, COLOR_RED "Invalid deny CIDR list.\n" COLOR_RESET);
+      free(country_code);
+      free(file_location);
+      free(password);
+      free(password_file);
+      free(allow_cidr_arg);
+      free(deny_cidr_arg);
+      free(allow_cidrs);
+      return 1;
+    }
+  }
+
+  FILE *results_file = NULL;
+  int results_jsonl = 0;
+  if (results_path) {
+    size_t len = strlen(results_path);
+    if (len >= 6 && strcmp(results_path + len - 6, ".jsonl") == 0) {
+      results_jsonl = 1;
+    } else if (len >= 5 && strcmp(results_path + len - 5, ".json") == 0) {
+      results_jsonl = 1;
+    }
+    results_file = fopen(results_path, "w");
+    if (!results_file) {
+      fprintf(stderr, COLOR_RED "Failed to open results file.\n" COLOR_RESET);
+      free(country_code);
+      free(file_location);
+      free(password);
+      free(password_file);
+      free(allow_cidr_arg);
+      free(deny_cidr_arg);
+      free(allow_cidrs);
+      free(deny_cidrs);
+      return 1;
+    }
+    if (!results_jsonl) {
+      fprintf(results_file,
+              "ip,port,country_code,country_name,online,auth_required,auth_success,password_used,screenshot_saved\n");
+    }
+  }
+
   password_list_t passwords = {0};
   if (password_file) {
     if (load_password_file(&passwords, password_file) != 0) {
@@ -1253,6 +1579,13 @@ int main(int argc, char **argv) {
       free(file_location);
       free(password);
       free(password_file);
+      free(allow_cidr_arg);
+      free(deny_cidr_arg);
+      free(allow_cidrs);
+      free(deny_cidrs);
+      if (results_file) {
+        fclose(results_file);
+      }
       return 1;
     }
   }
@@ -1263,6 +1596,13 @@ int main(int argc, char **argv) {
       free(file_location);
       free(password);
       free(password_file);
+      free(allow_cidr_arg);
+      free(deny_cidr_arg);
+      free(allow_cidrs);
+      free(deny_cidrs);
+      if (results_file) {
+        fclose(results_file);
+      }
       free_password_list(&passwords);
       return 1;
     }
@@ -1276,6 +1616,13 @@ int main(int argc, char **argv) {
       free(file_location);
       free(password);
       free(password_file);
+      free(allow_cidr_arg);
+      free(deny_cidr_arg);
+      free(allow_cidrs);
+      free(deny_cidrs);
+      if (results_file) {
+        fclose(results_file);
+      }
       free_password_list(&passwords);
       return 1;
     }
@@ -1301,7 +1648,10 @@ int main(int argc, char **argv) {
                                       resume_enabled, resume_offset,
                                       rate_limit, &passwords, allow_blank,
                                       jpeg_quality, rect_x, rect_y, rect_w,
-                                      rect_h, metadata_dir_used);
+                                      rect_h, metadata_dir_used, allow_cidrs,
+                                      allow_cidr_count, deny_cidrs,
+                                      deny_cidr_count, auth_delay_ms,
+                                      results_file, results_jsonl);
   printf(COLOR_GREEN
          "\nAll done. Enjoy %d new screenshots in this folder\n" COLOR_RESET,
          num_shots);
@@ -1316,6 +1666,14 @@ int main(int argc, char **argv) {
     free(password);
   if (password_file)
     free(password_file);
+  if (allow_cidr_arg)
+    free(allow_cidr_arg);
+  if (deny_cidr_arg)
+    free(deny_cidr_arg);
+  free(allow_cidrs);
+  free(deny_cidrs);
+  if (results_file)
+    fclose(results_file);
   free_password_list(&passwords);
   return 0;
 }
