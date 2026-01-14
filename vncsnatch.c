@@ -164,6 +164,12 @@ typedef struct {
   const char *country_name;
   int ping_available;
   int spinner_index;
+  int ui_initialized;
+  time_t start_time;
+  int worker_count;
+  char recent_hits[5][64];
+  int recent_hit_count;
+  int recent_hit_index;
   const cidr_t *allow_cidrs;
   size_t allow_cidr_count;
   const cidr_t *deny_cidrs;
@@ -623,6 +629,25 @@ static void write_results(scan_context_t *ctx, const char *ip_addr, int port,
   pthread_mutex_unlock(&ctx->results_mutex);
 }
 
+static void record_recent_hit(scan_context_t *ctx, const char *ip_addr,
+                              int port) {
+  if (port <= 0) {
+    return;
+  }
+  pthread_mutex_lock(&ctx->print_mutex);
+  snprintf(ctx->recent_hits[ctx->recent_hit_index],
+           sizeof(ctx->recent_hits[ctx->recent_hit_index]), "%s:%d", ip_addr,
+           port);
+  ctx->recent_hit_index = (ctx->recent_hit_index + 1) %
+                          (int)(sizeof(ctx->recent_hits) /
+                                sizeof(ctx->recent_hits[0]));
+  if (ctx->recent_hit_count <
+      (int)(sizeof(ctx->recent_hits) / sizeof(ctx->recent_hits[0]))) {
+    ctx->recent_hit_count++;
+  }
+  pthread_mutex_unlock(&ctx->print_mutex);
+}
+
 static int read_resume_offset(const char *path, uint64_t *offset_out) {
   FILE *file = fopen(path, "r");
   if (!file) {
@@ -767,36 +792,111 @@ static void update_progress(scan_context_t *ctx, int force) {
   uint64_t shots = ctx->screenshots;
   uint64_t auth_attempts = ctx->auth_attempts;
   uint64_t auth_success = ctx->auth_success;
+  int recent_count = ctx->recent_hit_count;
+  int recent_index = ctx->recent_hit_index;
+  char recent[5][64];
+  for (int i = 0; i < recent_count; i++) {
+    int idx = (recent_index - 1 - i);
+    if (idx < 0) {
+      idx += (int)(sizeof(ctx->recent_hits) / sizeof(ctx->recent_hits[0]));
+    }
+    snprintf(recent[i], sizeof(recent[i]), "%s", ctx->recent_hits[idx]);
+  }
   pthread_mutex_unlock(&ctx->stats_mutex);
 
   double pct = total ? (double)scanned * 100.0 / (double)total : 0.0;
   static const char spinner[] = "|/-\\";
   char spin = spinner[ctx->spinner_index % 4];
   ctx->spinner_index++;
-  if (!ctx->ping_available) {
-    printf("\r\033[2K[%c] %llu/%llu (%.1f%%) online:n/a vnc:%llu noauth:%llu auth:%llu/%llu shots:%llu",
-           spin,
-           (unsigned long long)scanned,
-           (unsigned long long)total,
-           pct,
-           (unsigned long long)vnc_found,
-           (unsigned long long)vnc_noauth,
-           (unsigned long long)auth_success,
-           (unsigned long long)auth_attempts,
-           (unsigned long long)shots);
-  } else {
-    printf("\r\033[2K[%c] %llu/%llu (%.1f%%) online:%llu vnc:%llu noauth:%llu auth:%llu/%llu shots:%llu",
-           spin,
-           (unsigned long long)scanned,
-           (unsigned long long)total,
-           pct,
-           (unsigned long long)online,
-           (unsigned long long)vnc_found,
-           (unsigned long long)vnc_noauth,
-           (unsigned long long)auth_success,
-           (unsigned long long)auth_attempts,
-           (unsigned long long)shots);
+  time_t now_sec = time(NULL);
+  double elapsed = difftime(now_sec, ctx->start_time);
+  double rate = elapsed > 0 ? (double)scanned / elapsed : 0.0;
+  double eta = rate > 0 ? (double)(total - scanned) / rate : 0.0;
+
+  int bar_width = 24;
+  int filled = (int)(pct / 100.0 * bar_width);
+  if (filled < 0) {
+    filled = 0;
   }
+  if (filled > bar_width) {
+    filled = bar_width;
+  }
+
+  if (!ctx->ui_initialized) {
+    printf("\n\n");
+    ctx->ui_initialized = 1;
+  }
+
+  printf("\033[2A");
+  printf("\r\033[2K[%c] [", spin);
+  for (int i = 0; i < bar_width; i++) {
+    putchar(i < filled ? '#' : '-');
+  }
+  printf("] %5.1f%% %llu/%llu  rate:%5.1f/s  eta:%5.0fs  threads:%d\n",
+         pct,
+         (unsigned long long)scanned,
+         (unsigned long long)total,
+         rate,
+         eta,
+         ctx->worker_count);
+
+  if (!ctx->ping_available) {
+    printf("\r\033[2Konline:%sn/a%s  vnc:%s%llu%s  noauth:%s%llu%s  auth:%s%llu/%llu%s  shots:%s%llu%s",
+           COLOR_YELLOW,
+           COLOR_RESET,
+           COLOR_BLUE,
+           (unsigned long long)vnc_found,
+           COLOR_RESET,
+           COLOR_GREEN,
+           (unsigned long long)vnc_noauth,
+           COLOR_RESET,
+           COLOR_YELLOW,
+           (unsigned long long)auth_success,
+           (unsigned long long)auth_attempts,
+           COLOR_RESET,
+           COLOR_GREEN,
+           (unsigned long long)shots,
+           COLOR_RESET);
+  } else {
+    printf("\r\033[2Konline:%s%llu%s  vnc:%s%llu%s  noauth:%s%llu%s  auth:%s%llu/%llu%s  shots:%s%llu%s",
+           COLOR_BLUE,
+           (unsigned long long)online,
+           COLOR_RESET,
+           COLOR_BLUE,
+           (unsigned long long)vnc_found,
+           COLOR_RESET,
+           COLOR_GREEN,
+           (unsigned long long)vnc_noauth,
+           COLOR_RESET,
+           COLOR_YELLOW,
+           (unsigned long long)auth_success,
+           (unsigned long long)auth_attempts,
+           COLOR_RESET,
+           COLOR_GREEN,
+           (unsigned long long)shots,
+           COLOR_RESET);
+  }
+         COLOR_BLUE,
+         (unsigned long long)vnc_found,
+         COLOR_RESET,
+         COLOR_GREEN,
+         (unsigned long long)vnc_noauth,
+         COLOR_RESET,
+         COLOR_YELLOW,
+         (unsigned long long)auth_success,
+         (unsigned long long)auth_attempts,
+         COLOR_RESET,
+         COLOR_GREEN,
+         (unsigned long long)shots,
+         COLOR_RESET);
+
+  if (recent_count > 0) {
+    printf("  hits:");
+    for (int i = 0; i < recent_count; i++) {
+      printf(" %s", recent[i]);
+    }
+  }
+  printf("\n");
   fflush(stdout);
   ctx->last_print = now;
   pthread_mutex_unlock(&ctx->print_mutex);
@@ -914,6 +1014,7 @@ static void *scan_worker(void *arg) {
     pthread_mutex_unlock(&ctx->stats_mutex);
 
     if (vnc_state >= 0) {
+      record_recent_hit(ctx, ip_addr, port_used);
       write_metadata(ctx, ip_addr, port_used, vnc_state, online, online_known,
                      password_used, took_shot);
       write_results(ctx, ip_addr, port_used, vnc_state, online, online_known,
@@ -991,6 +1092,8 @@ int parse_and_check_ips(const char *file_location, const char *country_code,
   ctx.country_name = country_name;
   ctx.ping_available = has_required_capabilities() ? 1 : 0;
   ctx.spinner_index = 0;
+  ctx.ui_initialized = 0;
+  ctx.start_time = time(NULL);
   ctx.allow_cidrs = allow_cidrs;
   ctx.allow_cidr_count = allow_cidr_count;
   ctx.deny_cidrs = deny_cidrs;
@@ -1030,6 +1133,7 @@ int parse_and_check_ips(const char *file_location, const char *country_code,
   }
 
   int worker_count = get_worker_count(workers);
+  ctx.worker_count = worker_count;
   if (!quiet) {
     printf("Using %d worker threads\n", worker_count);
   }
