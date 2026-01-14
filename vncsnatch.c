@@ -876,19 +876,6 @@ static void update_progress(scan_context_t *ctx, int force) {
            (unsigned long long)shots,
            COLOR_RESET);
   }
-         COLOR_BLUE,
-         (unsigned long long)vnc_found,
-         COLOR_RESET,
-         COLOR_GREEN,
-         (unsigned long long)vnc_noauth,
-         COLOR_RESET,
-         COLOR_YELLOW,
-         (unsigned long long)auth_success,
-         (unsigned long long)auth_attempts,
-         COLOR_RESET,
-         COLOR_GREEN,
-         (unsigned long long)shots,
-         COLOR_RESET);
 
   if (recent_count > 0) {
     printf("  hits:");
