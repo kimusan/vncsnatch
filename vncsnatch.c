@@ -655,13 +655,25 @@ static void record_recent_hit(scan_context_t *ctx, const char *ip_addr,
   pthread_mutex_unlock(&ctx->print_mutex);
 }
 
-static int read_resume_offset(const char *path, uint64_t *offset_out) {
+static int read_resume_offset(const char *path, const char *country_code,
+                              uint64_t *offset_out) {
   FILE *file = fopen(path, "r");
   if (!file) {
     return -1;
   }
+  char line[128];
   unsigned long long value = 0;
-  if (fscanf(file, "%llu", &value) != 1) {
+  if (!fgets(line, sizeof(line), file)) {
+    fclose(file);
+    return -1;
+  }
+  char stored_country[8] = {0};
+  if (sscanf(line, "%7s %llu", stored_country, &value) == 2) {
+    if (!country_code || strcmp(stored_country, country_code) != 0) {
+      fclose(file);
+      return -1;
+    }
+  } else if (sscanf(line, "%llu", &value) != 1) {
     fclose(file);
     return -1;
   }
@@ -670,12 +682,17 @@ static int read_resume_offset(const char *path, uint64_t *offset_out) {
   return 0;
 }
 
-static void write_resume_offset(const char *path, uint64_t offset) {
+static void write_resume_offset(const char *path, const char *country_code,
+                                uint64_t offset) {
   FILE *file = fopen(path, "w");
   if (!file) {
     return;
   }
-  fprintf(file, "%llu\n", (unsigned long long)offset);
+  if (country_code && country_code[0] != '\0') {
+    fprintf(file, "%s %llu\n", country_code, (unsigned long long)offset);
+  } else {
+    fprintf(file, "%llu\n", (unsigned long long)offset);
+  }
   fclose(file);
 }
 
@@ -749,7 +766,7 @@ static void checkpoint_update(scan_context_t *ctx, int force) {
   uint64_t scanned = ctx->scanned_ips;
   pthread_mutex_unlock(&ctx->stats_mutex);
 
-  write_resume_offset(".line", scanned);
+  write_resume_offset(".line", ctx->country_code, scanned);
   ctx->last_checkpoint = now;
   pthread_mutex_unlock(&ctx->checkpoint_mutex);
 }
@@ -1846,7 +1863,7 @@ int main(int argc, char **argv) {
 
   uint64_t resume_offset = 0;
   if (resume_enabled) {
-    if (read_resume_offset(".line", &resume_offset) != 0) {
+    if (read_resume_offset(".line", country_code, &resume_offset) != 0) {
       fprintf(stderr, COLOR_YELLOW
                       "Resume requested but no valid .line found. Starting from 0.\n"
                       COLOR_RESET);
