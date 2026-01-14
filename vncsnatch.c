@@ -183,6 +183,11 @@ typedef struct {
   FILE *results_file;
   int results_jsonl;
   pthread_mutex_t results_mutex;
+  uint64_t resume_online;
+  uint64_t resume_vnc;
+  uint64_t resume_noauth;
+  uint64_t resume_auth_success;
+  uint64_t resume_auth_attempts;
   int ports[64];
   size_t port_count;
   int resume_enabled;
@@ -656,19 +661,28 @@ static void record_recent_hit(scan_context_t *ctx, const char *ip_addr,
 }
 
 static int read_resume_offset(const char *path, const char *country_code,
-                              uint64_t *offset_out) {
+                              uint64_t *offset_out, uint64_t *online_out,
+                              uint64_t *vnc_out, uint64_t *noauth_out,
+                              uint64_t *auth_success_out,
+                              uint64_t *auth_attempts_out) {
   FILE *file = fopen(path, "r");
   if (!file) {
     return -1;
   }
   char line[128];
   unsigned long long value = 0;
+  unsigned long long online = 0;
+  unsigned long long vnc = 0;
+  unsigned long long noauth = 0;
+  unsigned long long auth_success = 0;
+  unsigned long long auth_attempts = 0;
   if (!fgets(line, sizeof(line), file)) {
     fclose(file);
     return -1;
   }
   char stored_country[8] = {0};
-  if (sscanf(line, "%7s %llu", stored_country, &value) == 2) {
+  if (sscanf(line, "%7s %llu %llu %llu %llu %llu %llu", stored_country, &value,
+             &online, &vnc, &noauth, &auth_success, &auth_attempts) >= 2) {
     if (!country_code || strcmp(stored_country, country_code) != 0) {
       fclose(file);
       return -1;
@@ -679,17 +693,40 @@ static int read_resume_offset(const char *path, const char *country_code,
   }
   fclose(file);
   *offset_out = (uint64_t)value;
+  if (online_out) {
+    *online_out = (uint64_t)online;
+  }
+  if (vnc_out) {
+    *vnc_out = (uint64_t)vnc;
+  }
+  if (noauth_out) {
+    *noauth_out = (uint64_t)noauth;
+  }
+  if (auth_success_out) {
+    *auth_success_out = (uint64_t)auth_success;
+  }
+  if (auth_attempts_out) {
+    *auth_attempts_out = (uint64_t)auth_attempts;
+  }
   return 0;
 }
 
 static void write_resume_offset(const char *path, const char *country_code,
-                                uint64_t offset) {
+                                uint64_t offset, uint64_t online, uint64_t vnc,
+                                uint64_t noauth, uint64_t auth_success,
+                                uint64_t auth_attempts) {
   FILE *file = fopen(path, "w");
   if (!file) {
     return;
   }
   if (country_code && country_code[0] != '\0') {
-    fprintf(file, "%s %llu\n", country_code, (unsigned long long)offset);
+    fprintf(file, "%s %llu %llu %llu %llu %llu %llu\n", country_code,
+            (unsigned long long)offset,
+            (unsigned long long)online,
+            (unsigned long long)vnc,
+            (unsigned long long)noauth,
+            (unsigned long long)auth_success,
+            (unsigned long long)auth_attempts);
   } else {
     fprintf(file, "%llu\n", (unsigned long long)offset);
   }
@@ -710,6 +747,11 @@ static int apply_resume_offset(scan_context_t *ctx) {
       ctx->range_index = i;
       ctx->current_ip = ctx->ranges[i].start + (uint32_t)offset;
       ctx->scanned_ips = ctx->resume_offset;
+      ctx->online_hosts = ctx->resume_online;
+      ctx->vnc_found = ctx->resume_vnc;
+      ctx->vnc_noauth = ctx->resume_noauth;
+      ctx->auth_success = ctx->resume_auth_success;
+      ctx->auth_attempts = ctx->resume_auth_attempts;
       return 0;
     }
     offset -= range_size;
@@ -764,9 +806,15 @@ static void checkpoint_update(scan_context_t *ctx, int force) {
 
   pthread_mutex_lock(&ctx->stats_mutex);
   uint64_t scanned = ctx->scanned_ips;
+  uint64_t online = ctx->online_hosts;
+  uint64_t vnc = ctx->vnc_found;
+  uint64_t noauth = ctx->vnc_noauth;
+  uint64_t auth_success = ctx->auth_success;
+  uint64_t auth_attempts = ctx->auth_attempts;
   pthread_mutex_unlock(&ctx->stats_mutex);
 
-  write_resume_offset(".line", ctx->country_code, scanned);
+  write_resume_offset(".line", ctx->country_code, scanned, online, vnc,
+                      noauth, auth_success, auth_attempts);
   ctx->last_checkpoint = now;
   pthread_mutex_unlock(&ctx->checkpoint_mutex);
 }
@@ -1013,11 +1061,11 @@ static void *scan_worker(void *arg) {
         }
       } else if (vnc_state == 0 && ctx->passwords &&
                  ctx->passwords->count > 0) {
+        pthread_mutex_lock(&ctx->stats_mutex);
+        ctx->auth_attempts++;
+        pthread_mutex_unlock(&ctx->stats_mutex);
         for (size_t i = 0; i < ctx->passwords->count; i++) {
           const char *candidate = ctx->passwords->items[i];
-          pthread_mutex_lock(&ctx->stats_mutex);
-          ctx->auth_attempts++;
-          pthread_mutex_unlock(&ctx->stats_mutex);
           if (capture_snapshot(ip_addr, port_used, ctx->snapshot_timeout,
                                ctx->verbose, candidate, ctx->allow_blank,
                                ctx->jpeg_quality, ctx->rect_x, ctx->rect_y,
@@ -1090,7 +1138,11 @@ int parse_and_check_ips(const char *file_location, const char *country_code,
                         const char *metadata_dir, const cidr_t *allow_cidrs,
                         size_t allow_cidr_count, const cidr_t *deny_cidrs,
                         size_t deny_cidr_count, int auth_delay_ms,
-                        FILE *results_file, int results_jsonl) {
+                        FILE *results_file, int results_jsonl,
+                        uint64_t resume_online, uint64_t resume_vnc,
+                        uint64_t resume_noauth,
+                        uint64_t resume_auth_success,
+                        uint64_t resume_auth_attempts) {
   ip_range_t *ranges = NULL;
   size_t range_count = 0;
   uint64_t total_ips = 0;
@@ -1154,6 +1206,11 @@ int parse_and_check_ips(const char *file_location, const char *country_code,
   ctx.port_count = port_count;
   ctx.resume_enabled = resume_enabled;
   ctx.resume_offset = resume_offset;
+  ctx.resume_online = resume_online;
+  ctx.resume_vnc = resume_vnc;
+  ctx.resume_noauth = resume_noauth;
+  ctx.resume_auth_success = resume_auth_success;
+  ctx.resume_auth_attempts = resume_auth_attempts;
   ctx.rate_limit = rate_limit;
   for (size_t i = 0; i < port_count &&
                      i < (sizeof(ctx.ports) / sizeof(ctx.ports[0]));
@@ -1862,8 +1919,15 @@ int main(int argc, char **argv) {
   }
 
   uint64_t resume_offset = 0;
+  uint64_t resume_online = 0;
+  uint64_t resume_vnc = 0;
+  uint64_t resume_noauth = 0;
+  uint64_t resume_auth_success = 0;
+  uint64_t resume_auth_attempts = 0;
   if (resume_enabled) {
-    if (read_resume_offset(".line", country_code, &resume_offset) != 0) {
+    if (read_resume_offset(".line", country_code, &resume_offset,
+                           &resume_online, &resume_vnc, &resume_noauth,
+                           &resume_auth_success, &resume_auth_attempts) != 0) {
       fprintf(stderr, COLOR_YELLOW
                       "Resume requested but no valid .line found. Starting from 0.\n"
                       COLOR_RESET);
@@ -1883,7 +1947,10 @@ int main(int argc, char **argv) {
                                       rect_h, metadata_dir_used, allow_cidrs,
                                       allow_cidr_count, deny_cidrs,
                                       deny_cidr_count, auth_delay_ms,
-                                      results_file, results_jsonl);
+                                      results_file, results_jsonl,
+                                      resume_online, resume_vnc,
+                                      resume_noauth, resume_auth_success,
+                                      resume_auth_attempts);
   printf(COLOR_GREEN
          "\nAll done. Enjoy %d new screenshots in this folder\n" COLOR_RESET,
          num_shots);
