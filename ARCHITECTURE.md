@@ -75,6 +75,28 @@ High-level data flow:
 - Metadata files are written per detected VNC host (JSON).
 - Optional results export emits CSV or JSONL.
 
+## Data Formats
+
+### Resume checkpoint (`.line`)
+```
+CC offset online vnc noauth auth_success auth_attempts
+```
+- `CC` is the country code (e.g., `SE`). Older numeric-only files still load.
+
+### Metadata JSON (`metadata/*.json`)
+Per detected VNC host:
+- `ip`, `port`
+- `country_code`, `country_name`
+- `online` (boolean or null)
+- `vnc_detected`, `auth_required`, `auth_success`
+- `password_used`
+- `screenshot_saved`, `screenshot_path`
+- `timestamp`
+
+### Results export (`--results`)
+- CSV (default): `ip,port,country_code,country_name,online,auth_required,auth_success,password_used,screenshot_saved`
+- JSONL: one JSON object per line with the same fields.
+
 ## Clean-room vncgrab Status
 
 The clean-room grabber is now the default path. External `vncsnapshot` is
