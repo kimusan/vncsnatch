@@ -113,6 +113,14 @@ Run the local protocol regression tests:
 make test
 ```
 
+## Tools
+
+Generate a custom IP2Location-style CSV from manual ranges:
+
+```bash
+python3 tools/generate_csv.py -c SE -n Sweden -r 5.26.179.17 -r 2.16.63.0-2.16.63.9 -o custom.csv
+```
+
 ## IMPORTANT
 
 You might wanna run this via tor or other proxy as some internet provides
