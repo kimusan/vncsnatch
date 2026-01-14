@@ -47,7 +47,7 @@ Results export example:
 ```
 -c, --country CODE   Two-letter country code (e.g., DK)
 -f, --file PATH      IP2Location CSV file path
--w, --workers N      Number of worker threads
+-w, --workers N      Number of worker threads (max 256)
 -t, --timeout SEC    Snapshot timeout in seconds (default 60)
 -p, --ports LIST     Comma-separated VNC ports (default 5900,5901)
 -r, --resume         Resume from .line checkpoint

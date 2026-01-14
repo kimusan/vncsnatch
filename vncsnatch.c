@@ -62,7 +62,7 @@ static void print_usage(const char *progname) {
   printf("Options:\n");
   printf("  -c, --country CODE   Two-letter country code (e.g., DK)\n");
   printf("  -f, --file PATH      IP2Location CSV file path\n");
-  printf("  -w, --workers N      Number of worker threads\n");
+  printf("  -w, --workers N      Number of worker threads (max 256)\n");
   printf("  -t, --timeout SEC    Snapshot timeout in seconds (default 60)\n");
   printf("  -p, --ports LIST     Comma-separated VNC ports (default 5900,5901)\n");
   printf("  -r, --resume         Resume from .line checkpoint\n");
@@ -284,8 +284,8 @@ static int get_worker_count(int override) {
   if (workers < 2) {
     workers = 2;
   }
-  if (workers > 64) {
-    workers = 64;
+  if (workers > 256) {
+    workers = 256;
   }
   return workers;
 }
@@ -1502,8 +1502,14 @@ int main(int argc, char **argv) {
     case 'w': {
       char *end = NULL;
       long value = strtol(optarg, &end, 10);
-      if (!end || *end != '\0' || value <= 0 || value > 256) {
+      if (!end || *end != '\0' || value <= 0) {
         fprintf(stderr, COLOR_RED "Invalid worker count.\n" COLOR_RESET);
+        free(country_code);
+        free(file_location);
+        return 1;
+      }
+      if (value > 256) {
+        fprintf(stderr, COLOR_RED "Max worker count is 256.\n" COLOR_RESET);
         free(country_code);
         free(file_location);
         return 1;
