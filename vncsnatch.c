@@ -822,6 +822,23 @@ static void update_progress(scan_context_t *ctx, int force) {
   double elapsed = difftime(now_sec, ctx->start_time);
   double rate = elapsed > 0 ? (double)scanned / elapsed : 0.0;
   double eta = rate > 0 ? (double)(total - scanned) / rate : 0.0;
+  long eta_sec = eta < 0 ? 0 : (long)eta;
+  long days = eta_sec / 86400;
+  eta_sec %= 86400;
+  long hours = eta_sec / 3600;
+  eta_sec %= 3600;
+  long minutes = eta_sec / 60;
+  long seconds = eta_sec % 60;
+  char eta_buf[32];
+  if (days > 0) {
+    snprintf(eta_buf, sizeof(eta_buf), "%ldd%02ldh", days, hours);
+  } else if (hours > 0) {
+    snprintf(eta_buf, sizeof(eta_buf), "%ldh%02ldm", hours, minutes);
+  } else if (minutes > 0) {
+    snprintf(eta_buf, sizeof(eta_buf), "%ldm%02lds", minutes, seconds);
+  } else {
+    snprintf(eta_buf, sizeof(eta_buf), "%lds", seconds);
+  }
 
   int bar_width = 24;
   int filled = (int)(pct / 100.0 * bar_width);
@@ -842,12 +859,12 @@ static void update_progress(scan_context_t *ctx, int force) {
   for (int i = 0; i < bar_width; i++) {
     putchar(i < filled ? '#' : '-');
   }
-  printf("] %5.1f%% %llu/%llu  rate:%5.1f/s  eta:%5.0fs  threads:%d\n",
+  printf("] %5.1f%% %llu/%llu  rate:%5.1f/s  eta:%s  threads:%d\n",
          pct,
          (unsigned long long)scanned,
          (unsigned long long)total,
          rate,
-         eta,
+         eta_buf,
          ctx->worker_count);
 
   if (!ctx->ping_available) {
@@ -949,13 +966,13 @@ static void *scan_worker(void *arg) {
     int vnc_state = -1;
     int took_shot = 0;
     const char *password_used = NULL;
-    int port_used = 0;
+    int port_used = ctx->port_count > 0 ? ctx->ports[0] : 0;
 
     if (online) {
       for (size_t i = 0; i < ctx->port_count; i++) {
-        vnc_state = get_security(ip_addr, ctx->ports[i], ctx->verbose != 0);
+        port_used = ctx->ports[i];
+        vnc_state = get_security(ip_addr, port_used, ctx->verbose != 0);
         if (vnc_state >= 0) {
-          port_used = ctx->ports[i];
           break;
         }
       }
