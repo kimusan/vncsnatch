@@ -1038,6 +1038,9 @@ int parse_and_check_ips(const char *file_location, const char *country_code,
   uint64_t total_ips = 0;
   char *country_name = NULL;
 
+  if (!quiet) {
+    printf("Preparing IP ranges...\n");
+  }
   if (load_country_ranges(file_location, country_code, &ranges, &range_count,
                           &total_ips, &country_name) != 0) {
     free(country_name);
@@ -1603,10 +1606,21 @@ int main(int argc, char **argv) {
     quiet = 0;
   }
 
+  if (!quiet) {
+    printf("Preparing filters...\n");
+  }
+
   cidr_t *allow_cidrs = NULL;
   size_t allow_cidr_count = 0;
   if (allow_cidr_arg) {
+    if (!quiet) {
+      printf(" - Loading allow CIDRs... ");
+      fflush(stdout);
+    }
     if (parse_cidr_list(allow_cidr_arg, &allow_cidrs, &allow_cidr_count) != 0) {
+      if (!quiet) {
+        printf("failed\n");
+      }
       fprintf(stderr, COLOR_RED "Invalid allow CIDR list.\n" COLOR_RESET);
       free(country_code);
       free(file_location);
@@ -1616,12 +1630,22 @@ int main(int argc, char **argv) {
       free(deny_cidr_arg);
       return 1;
     }
+    if (!quiet) {
+      printf("done (%zu)\n", allow_cidr_count);
+    }
   }
 
   cidr_t *deny_cidrs = NULL;
   size_t deny_cidr_count = 0;
   if (deny_cidr_arg) {
+    if (!quiet) {
+      printf(" - Loading deny CIDRs... ");
+      fflush(stdout);
+    }
     if (parse_cidr_list(deny_cidr_arg, &deny_cidrs, &deny_cidr_count) != 0) {
+      if (!quiet) {
+        printf("failed\n");
+      }
       fprintf(stderr, COLOR_RED "Invalid deny CIDR list.\n" COLOR_RESET);
       free(country_code);
       free(file_location);
@@ -1632,11 +1656,18 @@ int main(int argc, char **argv) {
       free(allow_cidrs);
       return 1;
     }
+    if (!quiet) {
+      printf("done (%zu)\n", deny_cidr_count);
+    }
   }
 
   FILE *results_file = NULL;
   int results_jsonl = 0;
   if (results_path) {
+    if (!quiet) {
+      printf(" - Opening results file... ");
+      fflush(stdout);
+    }
     size_t len = strlen(results_path);
     if (len >= 6 && strcmp(results_path + len - 6, ".jsonl") == 0) {
       results_jsonl = 1;
@@ -1645,6 +1676,9 @@ int main(int argc, char **argv) {
     }
     results_file = fopen(results_path, "w");
     if (!results_file) {
+      if (!quiet) {
+        printf("failed\n");
+      }
       fprintf(stderr, COLOR_RED "Failed to open results file.\n" COLOR_RESET);
       free(country_code);
       free(file_location);
@@ -1660,11 +1694,21 @@ int main(int argc, char **argv) {
       fprintf(results_file,
               "ip,port,country_code,country_name,online,auth_required,auth_success,password_used,screenshot_saved\n");
     }
+    if (!quiet) {
+      printf("done\n");
+    }
   }
 
   password_list_t passwords = {0};
   if (password_file) {
+    if (!quiet) {
+      printf(" - Loading password file... ");
+      fflush(stdout);
+    }
     if (load_password_file(&passwords, password_file) != 0) {
+      if (!quiet) {
+        printf("failed\n");
+      }
       fprintf(stderr, COLOR_RED "Failed to read password file.\n" COLOR_RESET);
       free(country_code);
       free(file_location);
@@ -1679,9 +1723,19 @@ int main(int argc, char **argv) {
       }
       return 1;
     }
+    if (!quiet) {
+      printf("done (%zu)\n", passwords.count);
+    }
   }
   if (password) {
+    if (!quiet) {
+      printf(" - Adding single password... ");
+      fflush(stdout);
+    }
     if (add_password(&passwords, password) != 0) {
+      if (!quiet) {
+        printf("failed\n");
+      }
       fprintf(stderr, COLOR_RED "Failed to store password.\n" COLOR_RESET);
       free(country_code);
       free(file_location);
@@ -1697,11 +1751,21 @@ int main(int argc, char **argv) {
       free_password_list(&passwords);
       return 1;
     }
+    if (!quiet) {
+      printf("done\n");
+    }
   }
 
   const char *metadata_dir_used = NULL;
   if (metadata_dir && metadata_dir[0] != '\0') {
+    if (!quiet) {
+      printf(" - Preparing metadata dir... ");
+      fflush(stdout);
+    }
     if (mkdir(metadata_dir, 0755) != 0 && errno != EEXIST) {
+      if (!quiet) {
+        printf("failed\n");
+      }
       fprintf(stderr, COLOR_RED "Failed to create metadata directory.\n" COLOR_RESET);
       free(country_code);
       free(file_location);
@@ -1718,6 +1782,9 @@ int main(int argc, char **argv) {
       return 1;
     }
     metadata_dir_used = metadata_dir;
+    if (!quiet) {
+      printf("done\n");
+    }
   }
 
   uint64_t resume_offset = 0;
