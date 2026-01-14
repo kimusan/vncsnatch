@@ -40,7 +40,7 @@ Results export example:
 - libreadline
 - libjpeg
 - an [IP2location](https://ip2location.com) lite csv file (can be downloaded for free)
-- [vncsnapshot](https://github.com/shamun/vncsnapshot") to take screenshots
+- [vncsnapshot](https://github.com/shamun/vncsnapshot") (optional) for legacy capture
 
 ## Options
 
@@ -69,10 +69,7 @@ Results export example:
 -h, --help           Show this help message
 ```
 
-## Clean-room vncgrab (in progress)
-
-The codebase includes a clean-room `vncgrab` module to replace the external
-`vncsnapshot` dependency. By default the build still uses `vncsnapshot`.
+## Clean-room vncgrab
 
 Default builds use the clean-room `vncgrab` module (no external dependency).
 If you want to use `vncsnapshot`, build with `USE_VNCSNAPSHOT=1`.
