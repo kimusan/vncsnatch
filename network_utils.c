@@ -9,6 +9,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <fcntl.h>
 /**
  * Computes the checksum of a packet.
  *
@@ -120,6 +121,56 @@ bool is_ip_up(const char *ip_addr) {
 
   close(sockfd);
   return true;
+}
+
+int is_tcp_open(const char *ip_addr, int port, int timeout_ms) {
+  int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+  if (sockfd < 0) {
+    return 0;
+  }
+
+  int flags = fcntl(sockfd, F_GETFL, 0);
+  if (flags < 0 || fcntl(sockfd, F_SETFL, flags | O_NONBLOCK) < 0) {
+    close(sockfd);
+    return 0;
+  }
+
+  struct sockaddr_in addr;
+  memset(&addr, 0, sizeof(addr));
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons((uint16_t)port);
+  if (inet_pton(AF_INET, ip_addr, &addr.sin_addr) != 1) {
+    close(sockfd);
+    return 0;
+  }
+
+  int result = connect(sockfd, (struct sockaddr *)&addr, sizeof(addr));
+  if (result < 0 && errno != EINPROGRESS) {
+    close(sockfd);
+    return 0;
+  }
+
+  fd_set wfds;
+  FD_ZERO(&wfds);
+  FD_SET(sockfd, &wfds);
+  struct timeval tv;
+  tv.tv_sec = timeout_ms / 1000;
+  tv.tv_usec = (timeout_ms % 1000) * 1000;
+  result = select(sockfd + 1, NULL, &wfds, NULL, &tv);
+  if (result <= 0) {
+    close(sockfd);
+    return 0;
+  }
+
+  int so_error = 0;
+  socklen_t len = sizeof(so_error);
+  if (getsockopt(sockfd, SOL_SOCKET, SO_ERROR, &so_error, &len) < 0) {
+    close(sockfd);
+    return 0;
+  }
+
+  close(sockfd);
+  return so_error == 0 ? 1 : 0;
 }
 
 /**

@@ -28,6 +28,7 @@
 #include <time.h>
 #include <unistd.h>
 #define TCP_PORT 5900
+#define VNC_SNATCH_VERSION "2.0.0"
 
 // ANSI color codes
 
@@ -53,6 +54,7 @@ int print_banner() {
          "╚═════╝╚═╝  ╚═╝\n"
          "                                                                    "
          " " COLOR_MAGENTA "             by  \n\n" COLOR_RESET);
+  printf(COLOR_YELLOW "Version " VNC_SNATCH_VERSION "\n\n" COLOR_RESET);
   return 0;
 }
 
@@ -188,6 +190,7 @@ typedef struct {
   uint64_t resume_noauth;
   uint64_t resume_auth_success;
   uint64_t resume_auth_attempts;
+  uint64_t online_tcp;
   int ports[64];
   size_t port_count;
   int resume_enabled;
@@ -864,6 +867,7 @@ static void update_progress(scan_context_t *ctx, int force) {
   uint64_t shots = ctx->screenshots;
   uint64_t auth_attempts = ctx->auth_attempts;
   uint64_t auth_success = ctx->auth_success;
+  uint64_t online_tcp = ctx->online_tcp;
   int recent_count = ctx->recent_hit_count;
   int recent_index = ctx->recent_hit_index;
   struct {
@@ -935,8 +939,9 @@ static void update_progress(scan_context_t *ctx, int force) {
          ctx->worker_count);
 
   if (!ctx->ping_available) {
-    printf("\r\033[2Konline:%sn/a%s  vnc:%s%llu%s  noauth:%s%llu%s  auth:%s%llu/%llu%s  shots:%s%llu%s",
+    printf("\r\033[2Konline:%s%llu%s  vnc:%s%llu%s  noauth:%s%llu%s  auth:%s%llu/%llu%s  shots:%s%llu%s",
            COLOR_YELLOW,
+           (unsigned long long)online_tcp,
            COLOR_RESET,
            COLOR_BLUE,
            (unsigned long long)vnc_found,
@@ -1038,7 +1043,19 @@ static void *scan_worker(void *arg) {
     rate_limit_wait(ctx);
 
     int online_known = ctx->ping_available != 0;
-    int online = online_known ? is_ip_up(ip_addr) : 1;
+    int online = 1;
+    if (online_known) {
+      online = is_ip_up(ip_addr);
+    } else {
+      int tcp_online = 0;
+      for (size_t i = 0; i < ctx->port_count; i++) {
+        if (is_tcp_open(ip_addr, ctx->ports[i], 300)) {
+          tcp_online = 1;
+          break;
+        }
+      }
+      online = tcp_online;
+    }
     int vnc_state = -1;
     int took_shot = 0;
     const char *password_used = NULL;
@@ -1090,8 +1107,11 @@ static void *scan_worker(void *arg) {
 
     pthread_mutex_lock(&ctx->stats_mutex);
     ctx->scanned_ips++;
-    if (online && online_known) {
+    if (online) {
       ctx->online_hosts++;
+      if (!online_known) {
+        ctx->online_tcp++;
+      }
     }
     if (vnc_state >= 0) {
       ctx->vnc_found++;
@@ -1104,7 +1124,7 @@ static void *scan_worker(void *arg) {
     }
     pthread_mutex_unlock(&ctx->stats_mutex);
 
-    if (online_known && online) {
+    if (online) {
       record_recent_hit(ctx, ip_addr, port_used, vnc_state);
     }
     if (vnc_state >= 0) {
@@ -1288,6 +1308,12 @@ int parse_and_check_ips(const char *file_location, const char *country_code,
          (unsigned long long)ctx.vnc_found,
          (unsigned long long)ctx.vnc_noauth,
          (unsigned long long)ctx.screenshots);
+  printf("Auth success %llu/%llu, online via %s %llu\n",
+         (unsigned long long)ctx.auth_success,
+         (unsigned long long)ctx.auth_attempts,
+         ctx.ping_available ? "ICMP" : "TCP",
+         (unsigned long long)(ctx.ping_available ? ctx.online_hosts
+                                                 : ctx.online_tcp));
 
   pthread_mutex_destroy(&ctx.range_mutex);
   pthread_mutex_destroy(&ctx.rate_mutex);

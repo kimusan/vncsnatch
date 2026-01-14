@@ -99,7 +99,7 @@ make cleanroom
 - The scanner now runs concurrently and shows a live progress line unless `-v` or `-q` is set.
 - If you want to resume, use `-r` and the `.line` file will be used as a checkpoint offset.
 - Resume checkpoints are scoped by country code and include counters (online/vnc/noauth/auth) so progress resumes accurately.
-- If the program has `cap_net_raw`/`cap_net_admin` or runs as root, it can use ICMP to skip offline hosts faster. Without those capabilities, the "online" stat is not available.
+- If the program has `cap_net_raw`/`cap_net_admin` or runs as root, it can use ICMP to skip offline hosts faster. Without those capabilities, the scanner falls back to fast TCP connect checks for the configured ports.
 - Metadata is written per detected VNC server in the metadata directory (default `metadata/`).
 - Password files are read line-by-line; blank lines and lines starting with `#` are ignored.
 - Results export writes CSV by default; use `.json` or `.jsonl` to emit JSON lines.
