@@ -54,7 +54,8 @@ Results export example:
 -R, --rate N         Limit scans to N IPs per second
 -P, --password PASS  Use PASS for VNC auth (if required)
 -F, --password-file  Read passwords from file (one per line)
--M, --metadata-dir   Output per-host metadata JSON files
+-M, --metadata-dir   Alias for --output-dir
+-O, --output-dir     Root output directory (default output/CC)
 -A, --allow-cidr     Comma-separated CIDR allowlist
 -D, --deny-cidr      Comma-separated CIDR denylist
 -T, --delay-attempts Delay between password attempts (ms)
@@ -100,7 +101,7 @@ make cleanroom
 - If you want to resume, use `-r` and the `.line` file will be used as a checkpoint offset.
 - Resume checkpoints are scoped by country code and include counters (online/vnc/noauth/auth) so progress resumes accurately.
 - If the program has `cap_net_raw`/`cap_net_admin` or runs as root, it can use ICMP to skip offline hosts faster. Without those capabilities, the scanner falls back to fast TCP connect checks for the configured ports.
-- Metadata is written per detected VNC server in the metadata directory (default `metadata/`).
+- Metadata and screenshots are written under `output/CC/` by default.
 - Password files are read line-by-line; blank lines and lines starting with `#` are ignored.
 - Results export writes CSV by default; use `.json` or `.jsonl` to emit JSON lines.
 - CIDR filters accept comma-separated IPv4 CIDR blocks (e.g., `10.0.0.0/8,192.168.0.0/16`).

@@ -71,7 +71,8 @@ static void print_usage(const char *progname) {
   printf("  -R, --rate N         Limit scans to N IPs per second\n");
   printf("  -P, --password PASS  Use PASS for VNC auth (if required)\n");
   printf("  -F, --password-file  Read passwords from file (one per line)\n");
-  printf("  -M, --metadata-dir   Output per-host metadata JSON files\n");
+  printf("  -M, --metadata-dir   Alias for --output-dir\n");
+  printf("  -O, --output-dir     Root output directory (default output/CC)\n");
   printf("  -A, --allow-cidr     Comma-separated CIDR allowlist\n");
   printf("  -D, --deny-cidr      Comma-separated CIDR denylist\n");
   printf("  -T, --delay-attempts Delay between password attempts (ms)\n");
@@ -113,12 +114,13 @@ int is_command_in_path(const char *command) {
 }
 
 #ifdef USE_VNCSNAPSHOT
-static int run_vncsnapshot(const char *ip_addr, int port, int timeout_sec);
+static int run_vncsnapshot(const char *ip_addr, int port, int timeout_sec,
+                           const char *output_path);
 #endif
 static int capture_snapshot(const char *ip_addr, int port, int timeout_sec,
                             int verbose, const char *password, int allow_blank,
                             int jpeg_quality, int rect_x, int rect_y,
-                            int rect_w, int rect_h);
+                            int rect_w, int rect_h, const char *output_dir);
 static int parse_ports(const char *arg, int *ports, size_t max_ports);
 static int parse_rect(const char *arg, int *x, int *y, int *w, int *h);
 
@@ -161,7 +163,7 @@ typedef struct {
   int rect_y;
   int rect_w;
   int rect_h;
-  const char *metadata_dir;
+  const char *output_dir;
   const char *country_code;
   const char *country_name;
   int ping_available;
@@ -515,16 +517,26 @@ static void json_escape(FILE *file, const char *value) {
   }
 }
 
+static int ensure_dir(const char *path) {
+  if (!path || path[0] == '\0') {
+    return -1;
+  }
+  if (mkdir(path, 0755) != 0 && errno != EEXIST) {
+    return -1;
+  }
+  return 0;
+}
+
 static void write_metadata(const scan_context_t *ctx, const char *ip_addr,
                            int port, int vnc_state, int online,
                            int online_known, const char *password_used,
                            int screenshot_ok) {
-  if (!ctx->metadata_dir) {
+  if (!ctx->output_dir) {
     return;
   }
 
   char path[256];
-  if (snprintf(path, sizeof(path), "%s/%s.json", ctx->metadata_dir, ip_addr) >=
+  if (snprintf(path, sizeof(path), "%s/%s.json", ctx->output_dir, ip_addr) >=
       (int)sizeof(path)) {
     return;
   }
@@ -567,6 +579,8 @@ static void write_metadata(const scan_context_t *ctx, const char *ip_addr,
           screenshot_ok ? "true" : "false");
   if (screenshot_ok) {
     fprintf(file, "  \"screenshot_path\": \"");
+    json_escape(file, ctx->output_dir);
+    fprintf(file, "/");
     json_escape(file, ip_addr);
     fprintf(file, ".jpg\",\n");
   } else {
@@ -1073,7 +1087,7 @@ static void *scan_worker(void *arg) {
         if (capture_snapshot(ip_addr, port_used, ctx->snapshot_timeout,
                              ctx->verbose, NULL, ctx->allow_blank,
                              ctx->jpeg_quality, ctx->rect_x, ctx->rect_y,
-                             ctx->rect_w, ctx->rect_h) == 0) {
+                             ctx->rect_w, ctx->rect_h, ctx->output_dir) == 0) {
           took_shot = 1;
         }
       } else if (vnc_state == 0 && ctx->passwords &&
@@ -1086,7 +1100,7 @@ static void *scan_worker(void *arg) {
           if (capture_snapshot(ip_addr, port_used, ctx->snapshot_timeout,
                                ctx->verbose, candidate, ctx->allow_blank,
                                ctx->jpeg_quality, ctx->rect_x, ctx->rect_y,
-                               ctx->rect_w, ctx->rect_h) == 0) {
+                               ctx->rect_w, ctx->rect_h, ctx->output_dir) == 0) {
             password_used = candidate;
             took_shot = 1;
             pthread_mutex_lock(&ctx->stats_mutex);
@@ -1207,7 +1221,7 @@ int parse_and_check_ips(const char *file_location, const char *country_code,
   ctx.rect_y = rect_y;
   ctx.rect_w = rect_w;
   ctx.rect_h = rect_h;
-  ctx.metadata_dir = metadata_dir;
+  ctx.output_dir = metadata_dir;
   ctx.country_code = country_code;
   ctx.country_name = country_name;
   ctx.ping_available = has_required_capabilities() ? 1 : 0;
@@ -1330,9 +1344,10 @@ int parse_and_check_ips(const char *file_location, const char *country_code,
 char *file_location = NULL;
 char *country_code = NULL;
 #ifdef USE_VNCSNAPSHOT
-static int run_vncsnapshot(const char *ip_addr, int port, int timeout_sec) {
+static int run_vncsnapshot(const char *ip_addr, int port, int timeout_sec,
+                           const char *output_path) {
   char target[48];
-  char output[32];
+  char output[256];
   char *argv[] = {"vncsnapshot", "-allowblank", target, output, NULL};
   time_t start_time = time(NULL);
 
@@ -1340,7 +1355,8 @@ static int run_vncsnapshot(const char *ip_addr, int port, int timeout_sec) {
       (int)sizeof(target)) {
     return -1;
   }
-  if (snprintf(output, sizeof(output), "%s.jpg", ip_addr) >= (int)sizeof(output)) {
+  if (snprintf(output, sizeof(output), "%s",
+               output_path ? output_path : "") >= (int)sizeof(output)) {
     return -1;
   }
 
@@ -1390,9 +1406,10 @@ static int run_vncsnapshot(const char *ip_addr, int port, int timeout_sec) {
 static int capture_snapshot(const char *ip_addr, int port, int timeout_sec,
                             int verbose, const char *password, int allow_blank,
                             int jpeg_quality, int rect_x, int rect_y,
-                            int rect_w, int rect_h) {
-  char output[32];
-  if (snprintf(output, sizeof(output), "%s.jpg", ip_addr) >=
+                            int rect_w, int rect_h, const char *output_dir) {
+  char output[256];
+  if (snprintf(output, sizeof(output), "%s/%s.jpg",
+               output_dir ? output_dir : ".", ip_addr) >=
       (int)sizeof(output)) {
     return -1;
   }
@@ -1405,7 +1422,7 @@ static int capture_snapshot(const char *ip_addr, int port, int timeout_sec,
   (void)rect_y;
   (void)rect_w;
   (void)rect_h;
-  return run_vncsnapshot(ip_addr, port, timeout_sec);
+  return run_vncsnapshot(ip_addr, port, timeout_sec, output);
 #else
   return vncgrab_snapshot(ip_addr, port, password, output, timeout_sec,
                           allow_blank != 0, jpeg_quality, rect_x, rect_y,
@@ -1447,7 +1464,7 @@ int main(int argc, char **argv) {
   int rate_limit = 0;
   char *password = NULL;
   char *password_file = NULL;
-  const char *metadata_dir = "metadata";
+  char *output_root = NULL;
   int allow_blank = 0;
   int jpeg_quality = 100;
   int rect_x = -1;
@@ -1471,6 +1488,7 @@ int main(int argc, char **argv) {
       {"password", required_argument, 0, 'P'},
       {"password-file", required_argument, 0, 'F'},
       {"metadata-dir", required_argument, 0, 'M'},
+      {"output-dir", required_argument, 0, 'O'},
       {"allow-cidr", required_argument, 0, 'A'},
       {"deny-cidr", required_argument, 0, 'D'},
       {"delay-attempts", required_argument, 0, 'T'},
@@ -1510,7 +1528,7 @@ int main(int argc, char **argv) {
     return 1;
   }
 #endif
-  while ((opt = getopt_long(argc, argv, "c:f:w:t:p:rR:P:F:M:A:D:T:o:bBQ:x:vqh",
+  while ((opt = getopt_long(argc, argv, "c:f:w:t:p:rR:P:F:M:O:A:D:T:o:bBQ:x:vqh",
                             long_options, &option_index)) != -1) {
     switch (opt) {
     case 'c':
@@ -1607,7 +1625,36 @@ int main(int argc, char **argv) {
       }
       break;
     case 'M':
-      metadata_dir = optarg;
+      if (output_root) {
+        free(output_root);
+      }
+      output_root = strdup(optarg);
+      if (!output_root) {
+        fprintf(stderr, COLOR_RED "Out of memory.\n" COLOR_RESET);
+        free(country_code);
+        free(file_location);
+        free(password);
+        free(password_file);
+        free(allow_cidr_arg);
+        free(deny_cidr_arg);
+        return 1;
+      }
+      break;
+    case 'O':
+      if (output_root) {
+        free(output_root);
+      }
+      output_root = strdup(optarg);
+      if (!output_root) {
+        fprintf(stderr, COLOR_RED "Out of memory.\n" COLOR_RESET);
+        free(country_code);
+        free(file_location);
+        free(password);
+        free(password_file);
+        free(allow_cidr_arg);
+        free(deny_cidr_arg);
+        return 1;
+      }
       break;
     case 'A':
       if (allow_cidr_arg) {
@@ -1919,17 +1966,10 @@ int main(int argc, char **argv) {
     }
   }
 
-  const char *metadata_dir_used = NULL;
-  if (metadata_dir && metadata_dir[0] != '\0') {
-    if (!quiet) {
-      printf(" - Preparing metadata dir... ");
-      fflush(stdout);
-    }
-    if (mkdir(metadata_dir, 0755) != 0 && errno != EEXIST) {
-      if (!quiet) {
-        printf("failed\n");
-      }
-      fprintf(stderr, COLOR_RED "Failed to create metadata directory.\n" COLOR_RESET);
+  if (!output_root) {
+    output_root = strdup("output");
+    if (!output_root) {
+      fprintf(stderr, COLOR_RED "Out of memory.\n" COLOR_RESET);
       free(country_code);
       free(file_location);
       free(password);
@@ -1944,10 +1984,55 @@ int main(int argc, char **argv) {
       free_password_list(&passwords);
       return 1;
     }
-    metadata_dir_used = metadata_dir;
-    if (!quiet) {
-      printf("done\n");
+  }
+
+  char output_dir_buf[256];
+  if (snprintf(output_dir_buf, sizeof(output_dir_buf), "%s/%s", output_root,
+               country_code) >= (int)sizeof(output_dir_buf)) {
+    fprintf(stderr, COLOR_RED "Output directory path too long.\n" COLOR_RESET);
+    free(country_code);
+    free(file_location);
+    free(password);
+    free(password_file);
+    free(allow_cidr_arg);
+    free(deny_cidr_arg);
+    free(allow_cidrs);
+    free(deny_cidrs);
+    if (results_file) {
+      fclose(results_file);
     }
+    free(output_root);
+    free_password_list(&passwords);
+    return 1;
+  }
+
+  const char *output_dir_used = output_dir_buf;
+  if (!quiet) {
+    printf(" - Preparing output dir... ");
+    fflush(stdout);
+  }
+  if (ensure_dir(output_root) != 0 || ensure_dir(output_dir_used) != 0) {
+    if (!quiet) {
+      printf("failed\n");
+    }
+    fprintf(stderr, COLOR_RED "Failed to create output directory.\n" COLOR_RESET);
+    free(country_code);
+    free(file_location);
+    free(password);
+    free(password_file);
+    free(allow_cidr_arg);
+    free(deny_cidr_arg);
+    free(allow_cidrs);
+    free(deny_cidrs);
+    if (results_file) {
+      fclose(results_file);
+    }
+    free(output_root);
+    free_password_list(&passwords);
+    return 1;
+  }
+  if (!quiet) {
+    printf("done\n");
   }
 
   uint64_t resume_offset = 0;
@@ -1976,7 +2061,7 @@ int main(int argc, char **argv) {
                                       resume_enabled, resume_offset,
                                       rate_limit, &passwords, allow_blank,
                                       jpeg_quality, rect_x, rect_y, rect_w,
-                                      rect_h, metadata_dir_used, allow_cidrs,
+                                      rect_h, output_dir_used, allow_cidrs,
                                       allow_cidr_count, deny_cidrs,
                                       deny_cidr_count, auth_delay_ms,
                                       results_file, results_jsonl,
@@ -2005,6 +2090,7 @@ int main(int argc, char **argv) {
   free(deny_cidrs);
   if (results_file)
     fclose(results_file);
+  free(output_root);
   free_password_list(&passwords);
   return 0;
 }
