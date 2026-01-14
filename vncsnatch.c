@@ -882,6 +882,7 @@ static void update_progress(scan_context_t *ctx, int force) {
   uint64_t auth_attempts = ctx->auth_attempts;
   uint64_t auth_success = ctx->auth_success;
   uint64_t online_tcp = ctx->online_tcp;
+  uint64_t resume_offset = ctx->resume_offset;
   int recent_count = ctx->recent_hit_count;
   int recent_index = ctx->recent_hit_index;
   struct {
@@ -905,8 +906,11 @@ static void update_progress(scan_context_t *ctx, int force) {
   ctx->spinner_index++;
   time_t now_sec = time(NULL);
   double elapsed = difftime(now_sec, ctx->start_time);
-  double rate = elapsed > 0 ? (double)scanned / elapsed : 0.0;
-  double eta = rate > 0 ? (double)(total - scanned) / rate : 0.0;
+  uint64_t scanned_delta =
+      scanned > resume_offset ? scanned - resume_offset : scanned;
+  uint64_t remaining = total > scanned ? total - scanned : 0;
+  double rate = elapsed > 0 ? (double)scanned_delta / elapsed : 0.0;
+  double eta = rate > 0 ? (double)remaining / rate : 0.0;
   long eta_sec = eta < 0 ? 0 : (long)eta;
   long days = eta_sec / 86400;
   eta_sec %= 86400;
@@ -2053,6 +2057,12 @@ int main(int argc, char **argv) {
       printf("Resuming from checkpoint: %llu\n",
              (unsigned long long)resume_offset);
     }
+  }
+  if (resume_auth_attempts > resume_vnc) {
+    resume_auth_attempts = resume_vnc;
+  }
+  if (resume_auth_success > resume_auth_attempts) {
+    resume_auth_success = resume_auth_attempts;
   }
 
   int num_shots = parse_and_check_ips(cleaned_file_location, country_code,
