@@ -155,7 +155,7 @@ typedef struct {
   const char *country_name;
   int ping_available;
   int spinner_index;
-  int ports[8];
+  int ports[64];
   size_t port_count;
   int resume_enabled;
   uint64_t resume_offset;
@@ -1005,7 +1005,7 @@ int main(int argc, char **argv) {
   int rect_y = -1;
   int rect_w = 0;
   int rect_h = 0;
-  int ports[8] = {5900, 5901};
+  int ports[64] = {5900, 5901};
   size_t port_count = 2;
   static struct option long_options[] = {
       {"country", required_argument, 0, 'c'},
