@@ -167,6 +167,8 @@ typedef struct {
   int ui_initialized;
   time_t start_time;
   int worker_count;
+  int ui_running;
+  pthread_t ui_thread;
   struct {
     char label[64];
     int is_vnc;
@@ -917,6 +919,15 @@ static void update_progress(scan_context_t *ctx, int force) {
   pthread_mutex_unlock(&ctx->print_mutex);
 }
 
+static void *ui_worker(void *arg) {
+  scan_context_t *ctx = arg;
+  while (ctx->ui_running) {
+    update_progress(ctx, 1);
+    usleep(100000);
+  }
+  return NULL;
+}
+
 static void *scan_worker(void *arg) {
   scan_context_t *ctx = arg;
   uint32_t ip;
@@ -1114,6 +1125,7 @@ int parse_and_check_ips(const char *file_location, const char *country_code,
   ctx.spinner_index = 0;
   ctx.ui_initialized = 0;
   ctx.start_time = time(NULL);
+  ctx.ui_running = 0;
   ctx.allow_cidrs = allow_cidrs;
   ctx.allow_cidr_count = allow_cidr_count;
   ctx.deny_cidrs = deny_cidrs;
@@ -1159,6 +1171,16 @@ int parse_and_check_ips(const char *file_location, const char *country_code,
   }
   update_progress(&ctx, 1);
 
+  int ui_thread_started = 0;
+  if (!quiet && !verbose) {
+    ctx.ui_running = 1;
+    if (pthread_create(&ctx.ui_thread, NULL, ui_worker, &ctx) == 0) {
+      ui_thread_started = 1;
+    } else {
+      ctx.ui_running = 0;
+    }
+  }
+
   pthread_t *threads = calloc((size_t)worker_count, sizeof(*threads));
   if (!threads) {
     free(ranges);
@@ -1175,6 +1197,11 @@ int parse_and_check_ips(const char *file_location, const char *country_code,
   }
   for (int i = 0; i < started_workers; i++) {
     pthread_join(threads[i], NULL);
+  }
+
+  if (ui_thread_started) {
+    ctx.ui_running = 0;
+    pthread_join(ctx.ui_thread, NULL);
   }
 
   update_progress(&ctx, 1);
