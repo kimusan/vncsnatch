@@ -26,11 +26,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Default output layout to `output/CC` for screenshots and metadata.
 - Raised worker cap and clarified limits in CLI help.
 
-## [v2start] - 2026-01-12
-
-### Added
-- Start of v2 feature work and refactors.
-
 ## [0.1] - 2025-02-04
 
 ### Added
