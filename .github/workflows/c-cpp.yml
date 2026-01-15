@@ -13,18 +13,13 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
-    - name: install dependencied
+    - name: install dependencies
       run: | 
-          sudo apt install libreadline-dev libcap-dev
+          sudo apt install libreadline-dev libcap-dev libjpeg-turbo8-dev
     - name: make
       run: make
-    - name: Changelog Tool
-  # You may pin to the exact commit or the version.
-  # uses: rcmachado/changelog-action@6f13828e5fabf77edd1795f62506a8c75b6aa3a6
-      uses: rcmachado/changelog-action@v1
-      with:
-    # Pass arguments to changelog command
-        args: fmt
+    - name: test
+      run: make test
           
 #    - name: make check
 #      run: make check
