@@ -1,3 +1,5 @@
+![vncsnatch screenshot](https://raw.githubusercontent.com/kimusan/vncsnatch/main/assets/screenshot.png)
+
 # Intro
 
 This is a fun little project inspired by [vncresolver.com](https://vncresolver.com). This program takes
