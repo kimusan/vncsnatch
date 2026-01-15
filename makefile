@@ -14,7 +14,7 @@ ifeq ($(USE_VNCSNAPSHOT),1)
 	CFLAGS += -DUSE_VNCSNAPSHOT
 endif
 
-SRCS=vncsnatch.c file_utils.c misc_utils.c network_utils.c vncgrab.c des.c
+SRCS=src/vncsnatch.c src/file_utils.c src/misc_utils.c src/network_utils.c src/vncgrab.c src/des.c
 OBJS=$(subst .c,.o,$(SRCS))
 
 all: vncsnatch

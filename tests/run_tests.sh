@@ -8,13 +8,13 @@ bin_dir="$root_dir/tests/bin"
 mkdir -p "$bin_dir"
 
 echo "Building test helper..."
-$cc -g -Wall -I"$root_dir" \
+$cc -g -Wall -I"$root_dir/src" \
   -o "$bin_dir/test_security" \
   "$root_dir/tests/test_security.c" \
-  "$root_dir/network_utils.c" \
-  "$root_dir/misc_utils.c" \
+  "$root_dir/src/network_utils.c" \
+  "$root_dir/src/misc_utils.c" \
   -lcap
-$cc -g -Wall -I"$root_dir" \
+$cc -g -Wall -I"$root_dir/src" \
   -o "$bin_dir/test_resume" \
   "$root_dir/tests/test_resume.c"
 
@@ -24,12 +24,12 @@ if [ "${USE_OPENSSL:-0}" = "1" ]; then
   vncgrab_ldflags+=(-lcrypto)
 fi
 
-$cc -g -Wall -I"$root_dir" \
+$cc -g -Wall -I"$root_dir/src" \
   "${vncgrab_cflags[@]}" \
   -o "$bin_dir/test_vncgrab" \
   "$root_dir/tests/test_vncgrab.c" \
-  "$root_dir/vncgrab.c" \
-  "$root_dir/des.c" \
+  "$root_dir/src/vncgrab.c" \
+  "$root_dir/src/des.c" \
   "${vncgrab_ldflags[@]}"
 
 run_case() {
