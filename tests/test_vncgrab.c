@@ -39,7 +39,7 @@ int main(int argc, char **argv) {
     }
   }
 
-  int result = vncgrab_snapshot(host, port, password, outfile, 2, allow_blank,
+  int result = vncgrab_snapshot(host, port, password, outfile, 5, allow_blank,
                                 90, rect_x, rect_y, rect_w, rect_h, false);
   if (result != 0) {
     fprintf(stderr, "vncgrab_snapshot failed\n");
