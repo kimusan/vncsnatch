@@ -17,6 +17,19 @@ make all
 ./vncsnatch
 ```
 
+Install or uninstall:
+
+```bash
+make install
+make uninstall
+```
+
+Grant ICMP capability without running as root:
+
+```bash
+make caps
+```
+
 Non-interactive example:
 
 ```bash
