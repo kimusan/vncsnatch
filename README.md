@@ -40,7 +40,7 @@ Results export example:
 
 - libcapability (usually default everywhere)
 - libreadline
-- libjpeg
+- libjpeg (required for clean-room `vncgrab` screenshots)
 - an [IP2location](https://ip2location.com) lite csv file (can be downloaded for free)
 - [vncsnapshot](https://github.com/shamun/vncsnapshot") (optional) for legacy capture
 
@@ -145,3 +145,7 @@ Find me at [social.data.coop/@kimschulz (mastodon)](https://social.data.coop/@ki
 This was written purly for informational/educational purposes only.
 You can use/modify this as you please, however, I (Kim Schulz) am not responsible
 for any legal problems you may face using this information.
+
+## License
+
+MIT. See `LICENSE`.
