@@ -224,6 +224,32 @@ Build-time toggles mirror the makefile and are passed as build args:
 docker build --build-arg USE_OPENSSL=1 -t vncsnatch .
 ```
 
+### Scanning through Tor (optional)
+
+`docker-compose.tor.yml` is a plug-and-play overlay that adds a transparent Tor
+gateway and routes all of the scanner's traffic through it — no application
+proxy support needed. Add it as a second `-f`:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.tor.yml \
+    run --rm vncsnatch -c DK -R 1 -o /data/results.csv
+```
+
+Drop the second `-f` to go back to scanning directly. How it works: the `tor`
+service runs `tor` plus `iptables` rules that redirect every TCP connection
+(and DNS) through Tor, and the scanner joins that container's network namespace
+(`network_mode: service:tor`), so its traffic exits via Tor. The gateway image
+is built from `tor/` (pinned Alpine + `tor`), so what routes your traffic is
+auditable rather than a third-party image.
+
+Caveats:
+
+- Tor carries TCP only, so the ICMP fast-path is unavailable; the scanner uses
+  its TCP connect fallback automatically.
+- Scanning through Tor is slow and places load on the Tor network. Keep the
+  rate low (`-R`) and the ranges small, and only scan what you are authorised
+  to.
+
 The `tools/generate_csv.py` helper is a dev-time utility and is not shipped in
 the image; run it on the host with `python3` as shown under [Tools](#tools).
 
