@@ -64,16 +64,21 @@ jobs:
 
       - name: Entrypoint downloads a database
         run: |
-          mkdir -p data
-          docker run --rm -v "$PWD/data:/data" vncsnatch:ci fetch-db
-          test -s data/ip-country.csv
-          grep -q ",AD" data/ip-country.csv
+          # Use a named volume so it is owned by the container's non-root user
+          # (a host bind mount would be owned by the runner uid and unwritable).
+          docker volume create vncdata
+          docker run --rm -v vncdata:/data vncsnatch:ci fetch-db
+          docker run --rm -v vncdata:/data --entrypoint sh vncsnatch:ci -c \
+            'test -s /data/ip-country.csv && grep -q ",AD" /data/ip-country.csv'
+          docker volume rm vncdata
 
       - name: DB_URL_EXTRA is tried first
         run: |
-          rm -rf data && mkdir -p data
+          docker volume create vncdata
           # A bad extra source must fall through to the working defaults.
-          docker run --rm -v "$PWD/data:/data" \
+          docker run --rm -v vncdata:/data \
             -e DB_URL_EXTRA="https://127.0.0.1:1/nope.csv" \
             vncsnatch:ci fetch-db
-          test -s data/ip-country.csv
+          docker run --rm -v vncdata:/data --entrypoint sh vncsnatch:ci -c \
+            'test -s /data/ip-country.csv'
+          docker volume rm vncdata
