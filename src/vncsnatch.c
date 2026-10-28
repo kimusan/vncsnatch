@@ -207,6 +207,191 @@ typedef struct {
   struct timeval last_print;
 } scan_context_t;
 
+/*
+ * Converts a textual IPv4 value to a host-order uint32.
+ *
+ * Accepts both representations seen in public country databases:
+ *   - IP2Location style decimal integer (e.g. "16777216")
+ *   - dotted-quad (e.g. "1.0.0.0"), used by GitHub mirrors such as
+ *     sapics/ip-location-db
+ *
+ * Returns 0 on success and writes the value to *out, or -1 if the string is
+ * not a valid IPv4 value in either form.
+ */
+static int parse_ipv4_value(const char *str, uint32_t *out) {
+  if (str == NULL || *str == '\0') {
+    return -1;
+  }
+  if (strchr(str, '.') != NULL) {
+    struct in_addr addr;
+    if (inet_pton(AF_INET, str, &addr) != 1) {
+      return -1;
+    }
+    *out = ntohl(addr.s_addr);
+    return 0;
+  }
+  char *endptr = NULL;
+  errno = 0;
+  unsigned long long value = strtoull(str, &endptr, 10);
+  if (errno != 0 || endptr == str || *endptr != '\0' || value > UINT32_MAX) {
+    return -1;
+  }
+  *out = (uint32_t)value;
+  return 0;
+}
+
+/*
+ * Expands an IPv4 CIDR block (e.g. "1.0.0.0/24") into its first and last
+ * address. A bare address with no "/" is treated as a single-host /32.
+ *
+ * Returns 0 on success, -1 on malformed input.
+ */
+static int parse_ipv4_cidr(const char *str, uint32_t *start_out,
+                           uint32_t *end_out) {
+  char buf[46];
+  snprintf(buf, sizeof(buf), "%s", str);
+  char *slash = strchr(buf, '/');
+  int prefix = 32;
+  if (slash) {
+    *slash = '\0';
+    char *endptr = NULL;
+    errno = 0;
+    long p = strtol(slash + 1, &endptr, 10);
+    if (errno != 0 || endptr == slash + 1 || *endptr != '\0' || p < 0 ||
+        p > 32) {
+      return -1;
+    }
+    prefix = (int)p;
+  }
+  uint32_t base;
+  if (parse_ipv4_value(buf, &base) != 0) {
+    return -1;
+  }
+  uint32_t mask = (prefix == 0) ? 0u : (0xFFFFFFFFu << (32 - prefix));
+  *start_out = base & mask;
+  *end_out = base | ~mask;
+  return 0;
+}
+
+/*
+ * Splits a CSV line into fields on commas, honouring simple double-quoting.
+ * Surrounding quotes are stripped and a trailing CR/LF is trimmed from the
+ * last field. Returns the number of fields stored (capped at max_fields).
+ */
+static size_t split_csv(const char *line, char fields[][128], size_t max_fields) {
+  size_t count = 0;
+  const char *p = line;
+  while (count < max_fields) {
+    char *out = fields[count];
+    size_t len = 0;
+    int in_quotes = 0;
+    if (*p == '"') {
+      in_quotes = 1;
+      p++;
+    }
+    while (*p && len + 1 < 128) {
+      if (in_quotes) {
+        if (*p == '"') { p++; break; }
+      } else if (*p == ',' || *p == '\r' || *p == '\n') {
+        break;
+      }
+      out[len++] = *p++;
+    }
+    out[len] = '\0';
+    count++;
+    /* Advance to the next field separator. */
+    while (*p && *p != ',' && *p != '\r' && *p != '\n') {
+      p++;
+    }
+    if (*p != ',') {
+      break;
+    }
+    p++;
+  }
+  return count;
+}
+
+/* An exact two-uppercase-letter token, e.g. "US" (not "USA" or "Us"). */
+static int is_country_code_token(const char *s) {
+  return s[0] >= 'A' && s[0] <= 'Z' && s[1] >= 'A' && s[1] <= 'Z' &&
+         s[2] == '\0';
+}
+
+/*
+ * Parses a single CSV line into a range for the requested country.
+ *
+ * Supports several free IP-to-country layouts without preprocessing, so a CSV
+ * from any of the bundled public sources (and most others) works directly:
+ *   - IP2Location LITE DB1:  "from","to","CC","Country Name" (quoted decimal)
+ *   - sapics/ip-location-db: from,to,CC                      (dotted, no name)
+ *   - datasets/geoip2-ipv4:  CIDR,geoname,...,CC,Country,... (CIDR + columns)
+ * Detection is by shape: a first field containing "/" is a CIDR block and the
+ * country code is taken from whichever field is an exact 2-letter code;
+ * otherwise the first two fields are the range start/end and the third is CC.
+ *
+ * Returns 1 when the line is a usable range for country_code (filling start,
+ * end and name_out), 0 when the line should be skipped (header, other country,
+ * malformed).
+ */
+static int parse_country_line(const char *line, const char *country_code,
+                              uint32_t *start_out, uint32_t *end_out,
+                              char *name_buf, size_t name_buf_size) {
+  char fields[8][128];
+  size_t n = split_csv(line, fields, 8);
+  if (n < 2) {
+    return 0;
+  }
+
+  /* CIDR form (datasets/geoip2 and similar): first field is a network block,
+   * the country code sits in some later 2-letter column, and an adjacent
+   * longer field may hold the country name. */
+  if (strchr(fields[0], '/') != NULL) {
+    /* Match the requested code against any 2-letter column. Matching the
+     * target directly avoids mistaking a continent code (OC, NA, ...) in an
+     * earlier column for the country code. */
+    size_t cc_idx = n; /* sentinel: not found */
+    for (size_t i = 1; i < n; i++) {
+      if (is_country_code_token(fields[i]) &&
+          strcmp(fields[i], country_code) == 0) {
+        cc_idx = i;
+        break;
+      }
+    }
+    if (cc_idx == n) {
+      return 0;
+    }
+    if (parse_ipv4_cidr(fields[0], start_out, end_out) != 0) {
+      return 0;
+    }
+    /* Prefer a following non-code field as the display name. */
+    if (cc_idx + 1 < n && !is_country_code_token(fields[cc_idx + 1]) &&
+        fields[cc_idx + 1][0] != '\0') {
+      snprintf(name_buf, name_buf_size, "%s", fields[cc_idx + 1]);
+    } else {
+      snprintf(name_buf, name_buf_size, "%s", country_code);
+    }
+    return 1;
+  }
+
+  /* Range form: from,to,CC[,name] (quoted decimal or unquoted dotted). */
+  if (n < 3 || strcmp(fields[2], country_code) != 0) {
+    return 0;
+  }
+  if (parse_ipv4_value(fields[0], start_out) != 0 ||
+      parse_ipv4_value(fields[1], end_out) != 0) {
+    return 0;
+  }
+  if (*start_out > *end_out) {
+    return 0;
+  }
+  if (n >= 4 && fields[3][0] != '\0') {
+    snprintf(name_buf, name_buf_size, "%s", fields[3]);
+  } else {
+    snprintf(name_buf, name_buf_size, "%s", country_code);
+  }
+  return 1;
+}
+
 static int load_country_ranges(const char *file_location,
                                const char *country_code,
                                ip_range_t **ranges_out,
@@ -227,21 +412,10 @@ static int load_country_ranges(const char *file_location,
   }
 
   while (fgets(line, sizeof(line), file) != NULL) {
-    char start_ip_str[20], end_ip_str[20], csv_country_code[3],
-        csv_country_name[50];
-    int parsed = sscanf(line, "\"%19[^\"]\",\"%19[^\"]\",\"%2[^\"]\",\"%49[^\"]\"",
-                        start_ip_str, end_ip_str, csv_country_code,
-                        csv_country_name);
-    if (parsed != 4) {
-      continue;
-    }
-    if (strcmp(csv_country_code, country_code) != 0) {
-      continue;
-    }
-
-    uint32_t start_ip = (uint32_t)strtoul(start_ip_str, NULL, 10);
-    uint32_t end_ip = (uint32_t)strtoul(end_ip_str, NULL, 10);
-    if (start_ip > end_ip) {
+    char csv_country_name[128];
+    uint32_t start_ip, end_ip;
+    if (parse_country_line(line, country_code, &start_ip, &end_ip,
+                           csv_country_name, sizeof(csv_country_name)) != 1) {
       continue;
     }
 
