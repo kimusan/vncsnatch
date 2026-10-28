@@ -1,0 +1,21 @@
+services:
+  vncsnatch:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # Mirror the makefile toggles.
+        USE_OPENSSL: "0"
+        USE_VNCSNAPSHOT: "0"
+    image: vncsnatch:local
+    # Host directory ./data holds the IP2Location CSV and receives output/.
+    volumes:
+      - ./data:/data
+    # ICMP fast-path needs CAP_NET_RAW; without it the scanner falls back to
+    # TCP connect checks. Comment this out if your host policy forbids it.
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    # Override at runtime, e.g.:
+    #   docker compose run --rm vncsnatch -c DK -f /data/IP2LOCATION-LITE-DB1.CSV -o /data/results.csv
+    command: ["--help"]

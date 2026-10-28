@@ -1,0 +1,29 @@
+# Build artifacts
+*.o
+src/*.o
+/vncsnatch
+.depend
+tests/bin/
+
+# Scan output and resume checkpoints
+output/
+metadata/
+*.line
+*.jpg
+results.csv
+results.json
+results.jsonl
+
+# Docker bind-mount data (CSV cache, downloaded db, screenshots)
+data/
+ip-country.csv
+
+# Local IP2Location / country database files
+*IP2LOCATION*.CSV
+*IP2LOCATION*.csv
+
+# Editor / OS noise
+*~
+.vscode/
+.idea/
+.DS_Store
