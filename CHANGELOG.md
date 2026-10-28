@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Add MIT license and contributing guide.
+- ASN targeting via `--mode country|asn|both` with `--asn` (comma-separated ASN numbers and/or `org:name` substrings, case-insensitive) and `--asn-file`; `both` intersects the ASN filter with a country. In Docker the ASN database is auto-downloaded (`ASN_DB_URL`/`ASN_DB_URL_EXTRA`/`ASN_DB_CACHE`, `fetch-db asn`) and `VNC_MODE`/`VNC_ASN`/`VNC_ASN_FILE` map the new flags.
 - Dockerize the project: multi-stage `Dockerfile` producing a fully static Alpine binary (~19 MB image), plus `.dockerignore`, `.gitignore` and `docker-compose.yml` with a `/data` bind mount and optional `NET_RAW` capability.
 - Container auto-downloads an IP-to-country database when no `-f/--file` is given, caching it under `/data`. Multiple sources (sapics/ip-location-db, datasets/geoip2-ipv4) across GitHub and the jsDelivr CDN are tried in order.
 - `DB_URL`, `DB_URL_EXTRA`, `DB_HEADER`, `DB_CACHE`, `DB_REFRESH`, `DB_MAX_AGE_DAYS`, `DB_AUTO_REFRESH`, `DB_REFRESH_INTERVAL` and `DB_OUTPUT_DIR` environment variables to use a custom mirror (e.g. where GitHub is blocked) or an API-key-protected provider; `${VAR}` tokens in URLs are expanded safely and gzip responses are decompressed automatically.

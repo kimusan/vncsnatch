@@ -111,6 +111,15 @@ docker run --rm -v "$PWD/data:/data" vncsnatch fetch-db
 docker run --rm -v "$PWD/data:/data" vncsnatch fetch-db force
 ```
 
+For `--mode asn`/`both` the ASN database (`from,to,ASN,"Org"`, from
+`sapics/ip-location-db` geolite2-asn / dbip-asn) is downloaded and cached the
+same way at `/data/ip-asn.csv`; pre-seed it with `fetch-db asn`:
+
+```bash
+docker run --rm -v "$PWD/data:/data" vncsnatch fetch-db asn
+docker run --rm -v "$PWD/data:/data" vncsnatch --mode asn --asn org:cloudflare
+```
+
 To keep the database current over time, either run `fetch-db` periodically from
 the host scheduler (cron), or set `DB_AUTO_REFRESH=1` so a long-running scan
 re-checks and refreshes the cache in the background on `DB_REFRESH_INTERVAL`.
@@ -129,6 +138,9 @@ Configure the auto-download with these (all optional):
 | `DB_MAX_AGE_DAYS` | `7` | Re-download when the cached database is older than this many days. `0` keeps the cache forever. |
 | `DB_AUTO_REFRESH` | `0` | Set to `1` to run a background refresher during a scan that re-checks the cache age and refreshes it on an interval. |
 | `DB_REFRESH_INTERVAL` | `86400` | Background refresher interval in seconds (default daily). Only used with `DB_AUTO_REFRESH=1`. |
+| `ASN_DB_URL` | built-in ASN list | Like `DB_URL`, but for the ASN database (`--mode asn`/`both`). |
+| `ASN_DB_URL_EXTRA` | *(empty)* | Like `DB_URL_EXTRA`, for the ASN database. |
+| `ASN_DB_CACHE` | `/data/ip-asn.csv` | Where the ASN database is cached on the volume. |
 
 `${VAR}` references inside `DB_URL`/`DB_URL_EXTRA` are expanded from the
 environment, so an API token can be supplied as a separate variable rather than
@@ -174,6 +186,8 @@ no command line. Anything passed on the command line overrides the variable.
 | `VNC_PASSWORD_FILE` | `-F` | `VNC_VERBOSE=1` | `-v` |
 | `VNC_OUTPUT_DIR` | `-O` | `VNC_QUIET=1` | `-q` |
 | `VNC_ALLOWBLANK=1` | `-b` | `VNC_ARGS` | *(free-form extra flags)* |
+| `VNC_MODE` | `--mode` | `VNC_ASN` | `--asn` |
+| `VNC_ASN_FILE` | `--asn-file` | | |
 
 ```bash
 docker run --rm -v "$PWD/data:/data" \
@@ -219,7 +233,11 @@ the image; run it on the host with `python3` as shown under [Tools](#tools).
 
 ```
 -c, --country CODE   Two-letter country code (e.g., DK)
--f, --file PATH      IP2Location CSV file path
+-f, --file PATH      IP2Location/country CSV file path
+    --mode MODE      Target selection: country (default), asn, both
+    --asn SPEC       ASN filter: numbers and/or org:name substrings,
+                     comma-separated (e.g. 13335,AS15169,org:cloudflare)
+    --asn-file PATH  ASN database CSV (from,to,ASN,"Org")
 -w, --workers N      Number of worker threads (max 256)
 -t, --timeout SEC    Snapshot timeout in seconds (default 60)
 -p, --ports LIST     Comma-separated VNC ports (default 5900,5901)
@@ -241,6 +259,32 @@ the image; run it on the host with `python3` as shown under [Tools](#tools).
 -q, --quiet          Suppress progress output
 -h, --help           Show this help message
 ```
+
+## Scanning by ASN
+
+Instead of (or in addition to) a country, you can target an autonomous system
+with `--mode` and `--asn`:
+
+- `--mode country` (default): country ranges, as before.
+- `--mode asn`: ranges from an ASN database matching `--asn`; no country needed.
+- `--mode both`: country ranges intersected with the ASN filter.
+
+`--asn` takes a comma-separated list. Each item is either an ASN number
+(`13335`, or `AS13335`) or an organisation-name substring (`org:cloudflare`,
+case-insensitive). A range matches if any item matches.
+
+```bash
+# Everything Cloudflare (by number or name), from an ASN CSV:
+./vncsnatch --mode asn --asn 13335,org:cloudflare --asn-file asn-ipv4.csv
+
+# Only Google-owned ranges located in Denmark:
+./vncsnatch --mode both -c DK --asn org:google \
+    -f country.csv --asn-file asn-ipv4.csv
+```
+
+The ASN database is the `from,to,ASN,"Org"` CSV layout published by
+`sapics/ip-location-db` (geolite2-asn / dbip-asn). In Docker it is downloaded
+automatically for `--mode asn`/`both`; see the Docker section.
 
 ## Clean-room vncgrab
 
