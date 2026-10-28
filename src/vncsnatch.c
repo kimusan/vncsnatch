@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/capability.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
@@ -63,7 +64,11 @@ static void print_usage(const char *progname) {
   printf("\n");
   printf("Options:\n");
   printf("  -c, --country CODE   Two-letter country code (e.g., DK)\n");
-  printf("  -f, --file PATH      IP2Location CSV file path\n");
+  printf("  -f, --file PATH      IP2Location/country CSV file path\n");
+  printf("      --mode MODE      Target selection: country (default), asn, both\n");
+  printf("      --asn SPEC       ASN filter: numbers and/or org:name substrings,\n");
+  printf("                       comma-separated (e.g. 13335,AS15169,org:cloudflare)\n");
+  printf("      --asn-file PATH  ASN database CSV (from,to,ASN,\"Org\")\n");
   printf("  -w, --workers N      Number of worker threads (max 256)\n");
   printf("  -t, --timeout SEC    Snapshot timeout in seconds (default 60)\n");
   printf("  -p, --ports LIST     Comma-separated VNC ports (default 5900,5901)\n");
@@ -392,6 +397,185 @@ static int parse_country_line(const char *line, const char *country_code,
   return 1;
 }
 
+/* ---- ASN filtering ---- */
+
+/*
+ * A single ASN selector: either an autonomous system number (e.g. 13335) or a
+ * case-insensitive substring to match against the organisation name (e.g.
+ * "cloudflare"). A filter is a list of these; a range matches if any selector
+ * matches.
+ */
+typedef struct {
+  int is_number;       /* 1 = match by ASN number, 0 = match by org substring */
+  uint32_t number;     /* valid when is_number */
+  char org[128];       /* lowercased org substring when !is_number */
+} asn_selector_t;
+
+typedef struct {
+  asn_selector_t *items;
+  size_t count;
+} asn_filter_t;
+
+/* Target selection mode (how the scan's IP ranges are chosen). */
+typedef enum {
+  TARGET_COUNTRY = 0, /* ranges from the country database (default)      */
+  TARGET_ASN,         /* ranges from the ASN database matching a filter  */
+  TARGET_BOTH         /* country ranges intersected with ASN ranges      */
+} target_mode_t;
+
+static void str_tolower_copy(char *dst, size_t dst_size, const char *src) {
+  size_t i = 0;
+  for (; src[i] != '\0' && i + 1 < dst_size; i++) {
+    unsigned char c = (unsigned char)src[i];
+    dst[i] = (char)((c >= 'A' && c <= 'Z') ? c + 32 : c);
+  }
+  dst[i] = '\0';
+}
+
+/*
+ * Parses a comma-separated ASN spec into a filter. Each item is either a
+ * number, an "AS<number>" token, or an "org:<text>" / plain-text organisation
+ * substring. A bare numeric item is treated as an ASN number; anything else is
+ * an org-name substring (the optional "org:" prefix makes intent explicit).
+ *
+ * Returns 0 on success (filling *out), -1 on allocation failure or empty spec.
+ */
+static int parse_asn_filter(const char *spec, asn_filter_t *out) {
+  out->items = NULL;
+  out->count = 0;
+  if (!spec || *spec == '\0') {
+    return -1;
+  }
+  char *copy = strdup(spec);
+  if (!copy) {
+    return -1;
+  }
+  size_t capacity = 0;
+  char *token = strtok(copy, ",");
+  while (token) {
+    /* Trim leading/trailing spaces. */
+    while (*token == ' ') token++;
+    size_t tlen = strlen(token);
+    while (tlen > 0 && token[tlen - 1] == ' ') token[--tlen] = '\0';
+    if (tlen == 0) {
+      token = strtok(NULL, ",");
+      continue;
+    }
+
+    if (out->count == capacity) {
+      size_t newcap = capacity == 0 ? 8 : capacity * 2;
+      asn_selector_t *ni = realloc(out->items, newcap * sizeof(*ni));
+      if (!ni) {
+        free(copy);
+        free(out->items);
+        out->items = NULL;
+        out->count = 0;
+        return -1;
+      }
+      out->items = ni;
+      capacity = newcap;
+    }
+    asn_selector_t *sel = &out->items[out->count];
+
+    const char *val = token;
+    int force_org = 0;
+    if (strncasecmp(token, "org:", 4) == 0) {
+      val = token + 4;
+      force_org = 1;
+    } else if ((token[0] == 'A' || token[0] == 'a') &&
+               (token[1] == 'S' || token[1] == 's') &&
+               token[2] >= '0' && token[2] <= '9') {
+      val = token + 2; /* "AS13335" -> "13335" */
+    }
+
+    char *endptr = NULL;
+    errno = 0;
+    unsigned long long num = strtoull(val, &endptr, 10);
+    if (!force_org && *val != '\0' && endptr && *endptr == '\0' &&
+        errno == 0 && num <= UINT32_MAX) {
+      sel->is_number = 1;
+      sel->number = (uint32_t)num;
+      sel->org[0] = '\0';
+    } else {
+      sel->is_number = 0;
+      sel->number = 0;
+      str_tolower_copy(sel->org, sizeof(sel->org), val);
+    }
+    out->count++;
+    token = strtok(NULL, ",");
+  }
+  free(copy);
+  if (out->count == 0) {
+    free(out->items);
+    out->items = NULL;
+    return -1;
+  }
+  return 0;
+}
+
+static void free_asn_filter(asn_filter_t *f) {
+  if (f) {
+    free(f->items);
+    f->items = NULL;
+    f->count = 0;
+  }
+}
+
+/* Does an ASN number / org name match any selector in the filter? */
+static int asn_filter_matches(const asn_filter_t *f, uint32_t asn,
+                              const char *org) {
+  char org_lower[128];
+  str_tolower_copy(org_lower, sizeof(org_lower), org ? org : "");
+  for (size_t i = 0; i < f->count; i++) {
+    const asn_selector_t *s = &f->items[i];
+    if (s->is_number) {
+      if (s->number == asn) {
+        return 1;
+      }
+    } else if (s->org[0] != '\0' && strstr(org_lower, s->org) != NULL) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+/*
+ * Parses one line of an ASN database (from,to,ASN,"Org"; dotted or decimal
+ * IPs) and reports whether it matches the filter. On a match, fills the range
+ * and copies the organisation name into org_buf.
+ *
+ * Returns 1 on a matching range, 0 to skip (header, non-match, malformed).
+ */
+static int parse_asn_line(const char *line, const asn_filter_t *filter,
+                          uint32_t *start_out, uint32_t *end_out,
+                          char *org_buf, size_t org_buf_size) {
+  char fields[6][128];
+  size_t n = split_csv(line, fields, 6);
+  if (n < 3) {
+    return 0;
+  }
+  if (parse_ipv4_value(fields[0], start_out) != 0 ||
+      parse_ipv4_value(fields[1], end_out) != 0) {
+    return 0; /* header or non-numeric row */
+  }
+  if (*start_out > *end_out) {
+    return 0;
+  }
+  char *endptr = NULL;
+  errno = 0;
+  unsigned long long asn = strtoull(fields[2], &endptr, 10);
+  if (endptr == fields[2] || *endptr != '\0' || errno != 0 ||
+      asn > UINT32_MAX) {
+    return 0;
+  }
+  const char *org = (n >= 4) ? fields[3] : "";
+  if (!asn_filter_matches(filter, (uint32_t)asn, org)) {
+    return 0;
+  }
+  snprintf(org_buf, org_buf_size, "%s", org);
+  return 1;
+}
+
 static int load_country_ranges(const char *file_location,
                                const char *country_code,
                                ip_range_t **ranges_out,
@@ -450,6 +634,109 @@ static int load_country_ranges(const char *file_location,
   } else {
     free(country_name);
   }
+  return 0;
+}
+
+/*
+ * Loads IP ranges from an ASN database (from,to,ASN,"Org") keeping only ranges
+ * whose ASN number or organisation name matches the filter. Mirrors
+ * load_country_ranges; *label_out gets the first matching org name (caller
+ * frees).
+ */
+static int load_asn_ranges(const char *file_location,
+                           const asn_filter_t *filter, ip_range_t **ranges_out,
+                           size_t *range_count_out, uint64_t *total_ips_out,
+                           char **label_out) {
+  FILE *file = fopen(file_location, "r");
+  char line[1024];
+  ip_range_t *ranges = NULL;
+  size_t range_count = 0;
+  size_t range_capacity = 0;
+  uint64_t total_ips = 0;
+  char *label = NULL;
+
+  if (file == NULL) {
+    perror(COLOR_RED "Failed to open ASN CSV file" COLOR_RESET);
+    return -1;
+  }
+
+  while (fgets(line, sizeof(line), file) != NULL) {
+    char org[128];
+    uint32_t start_ip, end_ip;
+    if (parse_asn_line(line, filter, &start_ip, &end_ip, org, sizeof(org)) != 1) {
+      continue;
+    }
+    if (!label && org[0] != '\0') {
+      label = strdup(org);
+    }
+    if (range_count == range_capacity) {
+      size_t new_capacity = range_capacity == 0 ? 64 : range_capacity * 2;
+      ip_range_t *new_ranges = realloc(ranges, new_capacity * sizeof(*ranges));
+      if (!new_ranges) {
+        free(ranges);
+        free(label);
+        fclose(file);
+        return -1;
+      }
+      ranges = new_ranges;
+      range_capacity = new_capacity;
+    }
+    ranges[range_count].start = start_ip;
+    ranges[range_count].end = end_ip;
+    range_count++;
+    total_ips += (uint64_t)end_ip - (uint64_t)start_ip + 1;
+  }
+
+  fclose(file);
+  *ranges_out = ranges;
+  *range_count_out = range_count;
+  *total_ips_out = total_ips;
+  if (label_out) {
+    *label_out = label;
+  } else {
+    free(label);
+  }
+  return 0;
+}
+
+/*
+ * Intersects two range lists into a newly allocated list (every sub-range
+ * present in both a and b). Used for --mode both, i.e. ASN ranges restricted to
+ * a country. Returns 0 on success, -1 on allocation failure.
+ */
+static int intersect_ranges(const ip_range_t *a, size_t na,
+                            const ip_range_t *b, size_t nb,
+                            ip_range_t **out, size_t *out_count,
+                            uint64_t *out_total) {
+  ip_range_t *res = NULL;
+  size_t count = 0, capacity = 0;
+  uint64_t total = 0;
+  for (size_t i = 0; i < na; i++) {
+    for (size_t j = 0; j < nb; j++) {
+      uint32_t lo = a[i].start > b[j].start ? a[i].start : b[j].start;
+      uint32_t hi = a[i].end < b[j].end ? a[i].end : b[j].end;
+      if (lo > hi) {
+        continue;
+      }
+      if (count == capacity) {
+        size_t newcap = capacity == 0 ? 64 : capacity * 2;
+        ip_range_t *nr = realloc(res, newcap * sizeof(*nr));
+        if (!nr) {
+          free(res);
+          return -1;
+        }
+        res = nr;
+        capacity = newcap;
+      }
+      res[count].start = lo;
+      res[count].end = hi;
+      count++;
+      total += (uint64_t)hi - (uint64_t)lo + 1;
+    }
+  }
+  *out = res;
+  *out_count = count;
+  *out_total = total;
   return 0;
 }
 
@@ -1354,7 +1641,9 @@ int parse_and_check_ips(const char *file_location, const char *country_code,
                         uint64_t resume_online, uint64_t resume_vnc,
                         uint64_t resume_noauth,
                         uint64_t resume_auth_success,
-                        uint64_t resume_auth_attempts) {
+                        uint64_t resume_auth_attempts,
+                        target_mode_t mode, const asn_filter_t *asn_filter,
+                        const char *asn_file) {
   ip_range_t *ranges = NULL;
   size_t range_count = 0;
   uint64_t total_ips = 0;
@@ -1363,24 +1652,70 @@ int parse_and_check_ips(const char *file_location, const char *country_code,
   if (!quiet) {
     printf("Preparing IP ranges...\n");
   }
-  if (load_country_ranges(file_location, country_code, &ranges, &range_count,
-                          &total_ips, &country_name) != 0) {
-    free(country_name);
-    return 0;
+
+  if (mode == TARGET_COUNTRY) {
+    if (load_country_ranges(file_location, country_code, &ranges, &range_count,
+                            &total_ips, &country_name) != 0) {
+      free(country_name);
+      return 0;
+    }
+  } else if (mode == TARGET_ASN) {
+    if (load_asn_ranges(asn_file, asn_filter, &ranges, &range_count, &total_ips,
+                        &country_name) != 0) {
+      free(country_name);
+      return 0;
+    }
+  } else { /* TARGET_BOTH: country ranges intersected with ASN ranges */
+    ip_range_t *c_ranges = NULL, *a_ranges = NULL;
+    size_t c_count = 0, a_count = 0;
+    uint64_t c_total = 0, a_total = 0;
+    char *asn_label = NULL;
+    if (load_country_ranges(file_location, country_code, &c_ranges, &c_count,
+                            &c_total, &country_name) != 0) {
+      free(country_name);
+      return 0;
+    }
+    if (load_asn_ranges(asn_file, asn_filter, &a_ranges, &a_count, &a_total,
+                        &asn_label) != 0) {
+      free(c_ranges);
+      free(country_name);
+      free(asn_label);
+      return 0;
+    }
+    int ir = intersect_ranges(c_ranges, c_count, a_ranges, a_count, &ranges,
+                              &range_count, &total_ips);
+    free(c_ranges);
+    free(a_ranges);
+    free(asn_label);
+    if (ir != 0) {
+      free(country_name);
+      return 0;
+    }
   }
 
   if (range_count == 0) {
-    printf(COLOR_YELLOW "No ranges found for country code %s.\n" COLOR_RESET,
-           country_code);
+    if (mode == TARGET_COUNTRY) {
+      printf(COLOR_YELLOW "No ranges found for country code %s.\n" COLOR_RESET,
+             country_code);
+    } else {
+      printf(COLOR_YELLOW "No ranges matched the requested ASN filter.\n"
+             COLOR_RESET);
+    }
     free(ranges);
     free(country_name);
     return 0;
   }
 
-  printf("Country %s: %zu ranges totaling %llu IPs\n",
-         country_code,
-         range_count,
-         (unsigned long long)total_ips);
+  if (mode == TARGET_COUNTRY) {
+    printf("Country %s: %zu ranges totaling %llu IPs\n", country_code,
+           range_count, (unsigned long long)total_ips);
+  } else if (mode == TARGET_ASN) {
+    printf("ASN filter: %zu ranges totaling %llu IPs\n", range_count,
+           (unsigned long long)total_ips);
+  } else {
+    printf("Country %s + ASN filter: %zu ranges totaling %llu IPs\n",
+           country_code, range_count, (unsigned long long)total_ips);
+  }
 
   scan_context_t ctx;
   memset(&ctx, 0, sizeof(ctx));
@@ -1655,9 +1990,17 @@ int main(int argc, char **argv) {
   char *results_path = NULL;
   int ports[64] = {5900, 5901};
   size_t port_count = 2;
+  target_mode_t target_mode = TARGET_COUNTRY;
+  char *asn_spec = NULL;   /* --asn selector list */
+  char *asn_file = NULL;   /* --asn-file database path */
+  asn_filter_t asn_filter = {0};
+  enum { OPT_MODE = 256, OPT_ASN, OPT_ASN_FILE };
   static struct option long_options[] = {
       {"country", required_argument, 0, 'c'},
       {"file", required_argument, 0, 'f'},
+      {"mode", required_argument, 0, OPT_MODE},
+      {"asn", required_argument, 0, OPT_ASN},
+      {"asn-file", required_argument, 0, OPT_ASN_FILE},
       {"workers", required_argument, 0, 'w'},
       {"timeout", required_argument, 0, 't'},
       {"ports", required_argument, 0, 'p'},
@@ -1720,6 +2063,31 @@ int main(int argc, char **argv) {
         free(file_location);
       }
       file_location = strdup(optarg);
+      break;
+    case OPT_MODE:
+      if (strcmp(optarg, "country") == 0) {
+        target_mode = TARGET_COUNTRY;
+      } else if (strcmp(optarg, "asn") == 0) {
+        target_mode = TARGET_ASN;
+      } else if (strcmp(optarg, "both") == 0) {
+        target_mode = TARGET_BOTH;
+      } else {
+        fprintf(stderr, COLOR_RED
+                "Invalid --mode (use country, asn or both).\n" COLOR_RESET);
+        free(country_code);
+        free(file_location);
+        free(asn_spec);
+        free(asn_file);
+        return 1;
+      }
+      break;
+    case OPT_ASN:
+      free(asn_spec);
+      asn_spec = strdup(optarg);
+      break;
+    case OPT_ASN_FILE:
+      free(asn_file);
+      asn_file = strdup(optarg);
       break;
     case 'w': {
       char *end = NULL;
@@ -1942,51 +2310,109 @@ int main(int argc, char **argv) {
     }
   }
 
-  if (!country_code) {
+  int need_country = (target_mode == TARGET_COUNTRY || target_mode == TARGET_BOTH);
+  int need_asn = (target_mode == TARGET_ASN || target_mode == TARGET_BOTH);
+
+  if (need_asn && !asn_spec) {
+    fprintf(stderr, COLOR_RED
+            "--mode %s requires --asn <number|org:name>[,...].\n" COLOR_RESET,
+            target_mode == TARGET_ASN ? "asn" : "both");
+    free(country_code);
+    free(file_location);
+    free(asn_spec);
+    free(asn_file);
+    return 1;
+  }
+  if (need_asn && parse_asn_filter(asn_spec, &asn_filter) != 0) {
+    fprintf(stderr, COLOR_RED "Invalid --asn filter.\n" COLOR_RESET);
+    free(country_code);
+    free(file_location);
+    free(asn_spec);
+    free(asn_file);
+    return 1;
+  }
+
+  if (need_country && !country_code) {
     char input[8];
     printf("Please enter the country code to filter by (e.g., AU): ");
     if (fgets(input, sizeof(input), stdin) == NULL) {
       fprintf(stderr, COLOR_RED "Error reading country code.\n" COLOR_RESET);
+      free_asn_filter(&asn_filter);
+      free(asn_spec);
+      free(asn_file);
       return 1;
     }
     input[strcspn(input, "\n")] = '\0';
     country_code = strdup(input);
     if (!country_code) {
       fprintf(stderr, COLOR_RED "Out of memory.\n" COLOR_RESET);
+      free_asn_filter(&asn_filter);
+      free(asn_spec);
+      free(asn_file);
       return 1;
     }
   }
 
-  if (strlen(country_code) != 2) {
+  if (need_country && strlen(country_code) != 2) {
     fprintf(stderr, COLOR_RED "Country code must be 2 letters.\n" COLOR_RESET);
     free(country_code);
     free(file_location);
+    free_asn_filter(&asn_filter);
+    free(asn_spec);
+    free(asn_file);
     return 1;
   }
+  /* ASN-only scans still need a country code string for output paths and
+   * metadata; use a stable placeholder. */
+  if (!country_code) {
+    country_code = strdup("ASN");
+  }
 
-  if (!file_location) {
+  /* The country CSV is only needed when a country filter is in play. In ASN
+   * mode the -f file (or --asn-file) is the ASN database instead. */
+  if (need_country && !file_location) {
     printf("Please enter full file path to the CSV file from "
            "IP2Location.com.\nIt can be downloaded from "
            "https://download.ip2location.com/lite/"
            "\n\nFull path: ");
     file_location = readline("==>");
   }
-  if (file_location == NULL || strlen(file_location) == 0) {
+  if (need_country && (file_location == NULL || strlen(file_location) == 0)) {
     fprintf(stderr, COLOR_RED "Error reading user input.\n" COLOR_RESET);
-    if (file_location)
-      free(file_location);
-    if (country_code)
-      free(country_code);
+    free(file_location);
+    free(country_code);
+    free_asn_filter(&asn_filter);
+    free(asn_spec);
+    free(asn_file);
     return 1;
   }
 
-  char *cleaned_file_location = clean_file_location(file_location);
+  /* Resolve the ASN database path. In asn-only mode -f may carry it; in both
+   * mode -f is the country CSV, so the ASN DB must come from --asn-file. */
+  const char *asn_file_used = asn_file;
+  if (target_mode == TARGET_ASN && !asn_file_used) {
+    asn_file_used = file_location;
+  }
+  if (need_asn && (asn_file_used == NULL || asn_file_used[0] == '\0')) {
+    fprintf(stderr, COLOR_RED
+            "ASN mode needs an ASN database via --asn-file or -f.\n" COLOR_RESET);
+    free(file_location);
+    free(country_code);
+    free_asn_filter(&asn_filter);
+    free(asn_spec);
+    free(asn_file);
+    return 1;
+  }
+
+  char *cleaned_file_location =
+      file_location ? clean_file_location(file_location) : strdup("");
   if (!cleaned_file_location) {
     fprintf(stderr, COLOR_RED "Error cleaning file location.\n" COLOR_RESET);
-    if (file_location)
-      free(file_location);
-    if (country_code)
-      free(country_code);
+    free(file_location);
+    free(country_code);
+    free_asn_filter(&asn_filter);
+    free(asn_spec);
+    free(asn_file);
     return 1;
   }
 
@@ -2251,7 +2677,8 @@ int main(int argc, char **argv) {
                                       results_file, results_jsonl,
                                       resume_online, resume_vnc,
                                       resume_noauth, resume_auth_success,
-                                      resume_auth_attempts);
+                                      resume_auth_attempts,
+                                      target_mode, &asn_filter, asn_file_used);
   printf(COLOR_GREEN
          "\nAll done. Enjoy %d new screenshots in this folder\n" COLOR_RESET,
          num_shots);
@@ -2275,6 +2702,9 @@ int main(int argc, char **argv) {
   if (results_file)
     fclose(results_file);
   free(output_root);
+  free(asn_spec);
+  free(asn_file);
+  free_asn_filter(&asn_filter);
   free_password_list(&passwords);
   return 0;
 }

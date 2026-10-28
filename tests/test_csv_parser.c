@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 /*
  * Converts a textual IPv4 value to a host-order uint32.
@@ -244,6 +245,202 @@ static void check_line(const char *line, const char *cc, int want_ret,
   }
 }
 
+
+/*
+ * A single ASN selector: either an autonomous system number (e.g. 13335) or a
+ * case-insensitive substring to match against the organisation name (e.g.
+ * "cloudflare"). A filter is a list of these; a range matches if any selector
+ * matches.
+ */
+typedef struct {
+  int is_number;       /* 1 = match by ASN number, 0 = match by org substring */
+  uint32_t number;     /* valid when is_number */
+  char org[128];       /* lowercased org substring when !is_number */
+} asn_selector_t;
+
+typedef struct {
+  asn_selector_t *items;
+  size_t count;
+} asn_filter_t;
+
+static void str_tolower_copy(char *dst, size_t dst_size, const char *src) {
+  size_t i = 0;
+  for (; src[i] != '\0' && i + 1 < dst_size; i++) {
+    unsigned char c = (unsigned char)src[i];
+    dst[i] = (char)((c >= 'A' && c <= 'Z') ? c + 32 : c);
+  }
+  dst[i] = '\0';
+}
+
+/*
+ * Parses a comma-separated ASN spec into a filter. Each item is either a
+ * number, an "AS<number>" token, or an "org:<text>" / plain-text organisation
+ * substring. A bare numeric item is treated as an ASN number; anything else is
+ * an org-name substring (the optional "org:" prefix makes intent explicit).
+ *
+ * Returns 0 on success (filling *out), -1 on allocation failure or empty spec.
+ */
+static int parse_asn_filter(const char *spec, asn_filter_t *out) {
+  out->items = NULL;
+  out->count = 0;
+  if (!spec || *spec == '\0') {
+    return -1;
+  }
+  char *copy = strdup(spec);
+  if (!copy) {
+    return -1;
+  }
+  size_t capacity = 0;
+  char *token = strtok(copy, ",");
+  while (token) {
+    /* Trim leading/trailing spaces. */
+    while (*token == ' ') token++;
+    size_t tlen = strlen(token);
+    while (tlen > 0 && token[tlen - 1] == ' ') token[--tlen] = '\0';
+    if (tlen == 0) {
+      token = strtok(NULL, ",");
+      continue;
+    }
+
+    if (out->count == capacity) {
+      size_t newcap = capacity == 0 ? 8 : capacity * 2;
+      asn_selector_t *ni = realloc(out->items, newcap * sizeof(*ni));
+      if (!ni) {
+        free(copy);
+        free(out->items);
+        out->items = NULL;
+        out->count = 0;
+        return -1;
+      }
+      out->items = ni;
+      capacity = newcap;
+    }
+    asn_selector_t *sel = &out->items[out->count];
+
+    const char *val = token;
+    int force_org = 0;
+    if (strncasecmp(token, "org:", 4) == 0) {
+      val = token + 4;
+      force_org = 1;
+    } else if ((token[0] == 'A' || token[0] == 'a') &&
+               (token[1] == 'S' || token[1] == 's') &&
+               token[2] >= '0' && token[2] <= '9') {
+      val = token + 2; /* "AS13335" -> "13335" */
+    }
+
+    char *endptr = NULL;
+    errno = 0;
+    unsigned long long num = strtoull(val, &endptr, 10);
+    if (!force_org && *val != '\0' && endptr && *endptr == '\0' &&
+        errno == 0 && num <= UINT32_MAX) {
+      sel->is_number = 1;
+      sel->number = (uint32_t)num;
+      sel->org[0] = '\0';
+    } else {
+      sel->is_number = 0;
+      sel->number = 0;
+      str_tolower_copy(sel->org, sizeof(sel->org), val);
+    }
+    out->count++;
+    token = strtok(NULL, ",");
+  }
+  free(copy);
+  if (out->count == 0) {
+    free(out->items);
+    out->items = NULL;
+    return -1;
+  }
+  return 0;
+}
+
+static void free_asn_filter(asn_filter_t *f) {
+  if (f) {
+    free(f->items);
+    f->items = NULL;
+    f->count = 0;
+  }
+}
+
+/* Does an ASN number / org name match any selector in the filter? */
+static int asn_filter_matches(const asn_filter_t *f, uint32_t asn,
+                              const char *org) {
+  char org_lower[128];
+  str_tolower_copy(org_lower, sizeof(org_lower), org ? org : "");
+  for (size_t i = 0; i < f->count; i++) {
+    const asn_selector_t *s = &f->items[i];
+    if (s->is_number) {
+      if (s->number == asn) {
+        return 1;
+      }
+    } else if (s->org[0] != '\0' && strstr(org_lower, s->org) != NULL) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+/*
+ * Parses one line of an ASN database (from,to,ASN,"Org"; dotted or decimal
+ * IPs) and reports whether it matches the filter. On a match, fills the range
+ * and copies the organisation name into org_buf.
+ *
+ * Returns 1 on a matching range, 0 to skip (header, non-match, malformed).
+ */
+static int parse_asn_line(const char *line, const asn_filter_t *filter,
+                          uint32_t *start_out, uint32_t *end_out,
+                          char *org_buf, size_t org_buf_size) {
+  char fields[6][128];
+  size_t n = split_csv(line, fields, 6);
+  if (n < 3) {
+    return 0;
+  }
+  if (parse_ipv4_value(fields[0], start_out) != 0 ||
+      parse_ipv4_value(fields[1], end_out) != 0) {
+    return 0; /* header or non-numeric row */
+  }
+  if (*start_out > *end_out) {
+    return 0;
+  }
+  char *endptr = NULL;
+  errno = 0;
+  unsigned long long asn = strtoull(fields[2], &endptr, 10);
+  if (endptr == fields[2] || *endptr != '\0' || errno != 0 ||
+      asn > UINT32_MAX) {
+    return 0;
+  }
+  const char *org = (n >= 4) ? fields[3] : "";
+  if (!asn_filter_matches(filter, (uint32_t)asn, org)) {
+    return 0;
+  }
+  snprintf(org_buf, org_buf_size, "%s", org);
+  return 1;
+}
+
+/* ---- ASN test helpers ---- */
+
+static void check_asn_filter(const char *spec, int want_count) {
+  asn_filter_t f;
+  int r = parse_asn_filter(spec, &f);
+  if (want_count < 0) {
+    if (r == 0) { printf("FAIL asn-filter '%s' should have failed\n", spec); failures++; free_asn_filter(&f); }
+    return;
+  }
+  if (r != 0) { printf("FAIL asn-filter '%s' parse\n", spec); failures++; return; }
+  if ((int)f.count != want_count) { printf("FAIL asn-filter '%s' count=%zu want=%d\n", spec, f.count, want_count); failures++; }
+  free_asn_filter(&f);
+}
+
+static void check_asn_line(const char *line, const char *spec, int want_ret, uint32_t ws, uint32_t we) {
+  asn_filter_t f;
+  if (parse_asn_filter(spec, &f) != 0) { printf("FAIL asn-line filter '%s'\n", spec); failures++; return; }
+  uint32_t s = 0, e = 0; char org[128] = "";
+  int ret = parse_asn_line(line, &f, &s, &e, org, sizeof(org));
+  if (ret != want_ret || (want_ret == 1 && (s != ws || e != we))) {
+    printf("FAIL asn-line '%s' spec='%s' ret=%d s=%u e=%u\n", line, spec, ret, s, e); failures++;
+  }
+  free_asn_filter(&f);
+}
+
 int main(void) {
   /* IPv4 scalar: decimal and dotted */
   check_ip("16777216", 1, 16777216u);
@@ -286,6 +483,33 @@ int main(void) {
   check_line("network,geoname_id,continent_code,continent_name,"
              "country_iso_code,country_name,x,y\n",
              "AU", 0, 0, 0, NULL);
+
+  /* ASN filter parsing */
+  check_asn_filter("13335", 1);
+  check_asn_filter("13335,15169", 2);
+  check_asn_filter("AS13335", 1);
+  check_asn_filter("org:cloudflare", 1);
+  check_asn_filter("cloudflare", 1);
+  check_asn_filter("13335, org:google , AS15169", 3);
+  check_asn_filter("", -1);
+
+  /* ASN line matching: by number */
+  check_asn_line("1.0.0.0,1.0.0.255,13335,\"Cloudflare, Inc.\"\n", "13335", 1,
+                 16777216u, 16777471u);
+  /* by org substring, case-insensitive */
+  check_asn_line("1.0.0.0,1.0.0.255,13335,\"Cloudflare, Inc.\"\n", "org:cloud",
+                 1, 16777216u, 16777471u);
+  check_asn_line("1.0.0.0,1.0.0.255,13335,\"Cloudflare, Inc.\"\n", "CLOUDFLARE",
+                 1, 16777216u, 16777471u);
+  /* non-match by number and by org */
+  check_asn_line("1.0.4.0,1.0.7.255,38803,Gtelecom Pty Ltd\n", "13335", 0, 0, 0);
+  check_asn_line("1.0.4.0,1.0.7.255,38803,Gtelecom Pty Ltd\n", "org:cloudflare",
+                 0, 0, 0);
+  /* AS-prefixed spec matches a plain number in the db */
+  check_asn_line("1.0.0.0,1.0.0.255,13335,X\n", "AS13335", 1, 16777216u,
+                 16777471u);
+  /* header row skipped */
+  check_asn_line("network,start,asn,org\n", "13335", 0, 0, 0);
 
   if (failures) {
     printf("%d parser test(s) FAILED\n", failures);
