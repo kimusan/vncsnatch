@@ -53,7 +53,8 @@ Results export example:
 
 A multi-stage `Dockerfile` builds a fully static binary on Alpine, so the
 runtime image is small (~19 MB, including `curl` for the auto-download) with no
-shared-library dependencies.
+shared-library dependencies. It runs as an unprivileged user (`vnc`, uid 1000)
+and carries a `HEALTHCHECK` that confirms the binary is runnable.
 
 Build the image:
 
@@ -69,6 +70,11 @@ working directory is `/data`, so relative paths resolve there:
 docker run --rm -v "$PWD/data:/data" vncsnatch \
     -c DK -f /data/IP2LOCATION-LITE-DB1.CSV -o /data/results.csv
 ```
+
+Because the container runs as uid 1000, a bind-mounted `/data` must be writable
+by that uid. Create it owned by 1000 (`mkdir -p data && sudo chown 1000:1000
+data`), run as your own id (`--user "$(id -u):$(id -g)"`), or use a named
+volume (`-v vncdata:/data`), which is owned correctly out of the box.
 
 The ICMP reachability fast-path needs `CAP_NET_RAW`. Without it the scanner
 falls back to TCP connect checks, so grant the capability only if you want the

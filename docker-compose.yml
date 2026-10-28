@@ -11,6 +11,12 @@ services:
     # Host directory ./data holds the IP2Location CSV and receives output/.
     volumes:
       - ./data:/data
+    # The image runs as the unprivileged user "vnc" (uid 1000). The ./data bind
+    # mount must be writable by that uid; the simplest options are to create it
+    # owned by 1000 (`mkdir -p data && sudo chown 1000:1000 data`), or to run as
+    # your own id by uncommenting the line below.
+    # user: "${UID:-1000}:${GID:-1000}"
+    #
     # ICMP fast-path needs CAP_NET_RAW; without it the scanner falls back to
     # TCP connect checks. Comment this out if your host policy forbids it.
     cap_add:

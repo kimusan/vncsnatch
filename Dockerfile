@@ -49,14 +49,28 @@ FROM alpine:3.20 AS runtime
 # sources; envsubst (gettext) expands ${VAR} API tokens in custom URLs.
 RUN apk add --no-cache curl ca-certificates gzip gettext
 
-WORKDIR /data
-
 COPY --from=builder /build/vncsnatch /usr/local/bin/vncsnatch
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh /usr/local/bin/vncsnatch
+
+# Run as an unprivileged user. /data is owned by it so the bind mount is
+# writable. The ICMP fast-path still needs CAP_NET_RAW (cap_add=NET_RAW);
+# without it the scanner falls back to TCP connect checks, which need no
+# privileges, so the container is useful even as a plain non-root user.
+RUN addgroup -S -g 1000 vnc \
+    && adduser -S -u 1000 -G vnc -h /data vnc \
+    && mkdir -p /data \
+    && chown -R vnc:vnc /data
+USER vnc
 
 # Default output and working directory are bind-mount friendly.
+WORKDIR /data
 VOLUME ["/data"]
+
+# The scanner runs to completion rather than serving, so the health check just
+# confirms the binary is present and runnable (and its deps resolve).
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+    CMD vncsnatch --help >/dev/null 2>&1 || exit 1
 
 ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["--help"]

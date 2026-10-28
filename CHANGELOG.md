@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Optional background refresher (`DB_AUTO_REFRESH=1`) that re-checks and updates the cache on an interval during long scans, plus a `fetch-db force` form to download unconditionally.
 - Default container output directory to `/data/output` so screenshots, metadata and results are written to the mounted volume unless the caller sets `-O`/`-M`.
 - `fetch-db` container command to pre-seed the database cache without scanning.
+- Run the container as an unprivileged user (`vnc`, uid 1000) and add a `HEALTHCHECK`; document the `/data` ownership options for bind mounts.
 - `VNC_*` environment variables mapping to every CLI flag (plus free-form `VNC_ARGS`), so the scanner can be driven entirely from a compose `environment:` block; command-line flags still override them.
 - CSV parser unit tests (`tests/test_csv_parser.c`) and a `Docker` CI workflow that builds the image, checks the binary is static, runs the parser tests, and smoke-tests the auto-download.
 
