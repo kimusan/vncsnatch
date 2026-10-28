@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `fetch-db` container command to pre-seed the database cache without scanning.
 - Run the container as an unprivileged user (`vnc`, uid 1000) and add a `HEALTHCHECK`; document the `/data` ownership options for bind mounts.
 - Optional, plug-and-play Tor routing via `docker-compose.tor.yml` and a self-contained transparent Tor gateway image (`tor/`): add it as a second compose file to route all scanner traffic through Tor (TCP + DNS), with no application proxy support needed.
+- Publish workflow that builds and pushes multi-arch (amd64/arm64) scanner and Tor-gateway images to GHCR on version tags, so they can be pulled with `docker pull` instead of built locally.
 - `VNC_*` environment variables mapping to every CLI flag (plus free-form `VNC_ARGS`), so the scanner can be driven entirely from a compose `environment:` block; command-line flags still override them.
 - CSV parser unit tests (`tests/test_csv_parser.c`) and a `Docker` CI workflow that builds the image, checks the binary is static, runs the parser tests, and smoke-tests the auto-download.
 

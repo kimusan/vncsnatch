@@ -56,7 +56,13 @@ runtime image is small (~19 MB, including `curl` for the auto-download) with no
 shared-library dependencies. It runs as an unprivileged user (`vnc`, uid 1000)
 and carries a `HEALTHCHECK` that confirms the binary is runnable.
 
-Build the image:
+Pull the pre-built image from GHCR (published on each release):
+
+```bash
+docker pull ghcr.io/ramazansancar/vncsnatch:latest
+```
+
+Or build it yourself:
 
 ```bash
 docker build -t vncsnatch .
