@@ -1,0 +1,9 @@
+# Keep shell scripts and the Dockerfile LF so they run inside Linux containers
+# regardless of the host checkout settings.
+*.sh            text eol=lf
+docker-entrypoint.sh text eol=lf
+Dockerfile      text eol=lf
+*.yml           text eol=lf
+*.c             text eol=lf
+*.h             text eol=lf
+makefile        text eol=lf
