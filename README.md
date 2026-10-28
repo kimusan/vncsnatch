@@ -278,7 +278,8 @@ the image; run it on the host with `python3` as shown under [Tools](#tools).
     --asn-file PATH  ASN database CSV (from,to,ASN,"Org")
 -w, --workers N      Number of worker threads (max 256)
 -t, --timeout SEC    Snapshot timeout in seconds (default 60)
--p, --ports LIST     Comma-separated VNC ports (default 5900,5901)
+-p, --ports LIST     Comma-separated VNC ports and/or ranges, e.g.
+                     5900,5901 or 5900-5905 (default 5900,5901)
 -r, --resume         Resume from .line checkpoint
 -R, --rate N         Limit scans to N IPs per second
 -P, --password PASS  Use PASS for VNC auth (if required)

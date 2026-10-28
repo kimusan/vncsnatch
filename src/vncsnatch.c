@@ -71,7 +71,8 @@ static void print_usage(const char *progname) {
   printf("      --asn-file PATH  ASN database CSV (from,to,ASN,\"Org\")\n");
   printf("  -w, --workers N      Number of worker threads (max 256)\n");
   printf("  -t, --timeout SEC    Snapshot timeout in seconds (default 60)\n");
-  printf("  -p, --ports LIST     Comma-separated VNC ports (default 5900,5901)\n");
+  printf("  -p, --ports LIST     Comma-separated VNC ports and/or ranges,\n");
+  printf("                       e.g. 5900,5901 or 5900-5905 (default 5900,5901)\n");
   printf("  -r, --resume         Resume from .line checkpoint\n");
   printf("  -R, --rate N         Limit scans to N IPs per second\n");
   printf("  -P, --password PASS  Use PASS for VNC auth (if required)\n");
@@ -769,17 +770,35 @@ static int parse_ports(const char *arg, int *ports, size_t max_ports) {
   size_t count = 0;
   char *token = strtok(copy, ",");
   while (token) {
-    if (count >= max_ports) {
-      free(copy);
-      return -1;
+    /* Each comma-separated item is either a single port ("5900") or an
+     * inclusive range ("5900-5905"). */
+    char *dash = strchr(token, '-');
+    long lo, hi;
+    if (dash) {
+      *dash = '\0';
+      char *e1 = NULL, *e2 = NULL;
+      lo = strtol(token, &e1, 10);
+      hi = strtol(dash + 1, &e2, 10);
+      if (!e1 || *e1 != '\0' || !e2 || *e2 != '\0' || lo <= 0 || hi <= 0 ||
+          lo > 65535 || hi > 65535 || lo > hi) {
+        free(copy);
+        return -1;
+      }
+    } else {
+      char *end = NULL;
+      lo = hi = strtol(token, &end, 10);
+      if (!end || *end != '\0' || lo <= 0 || lo > 65535) {
+        free(copy);
+        return -1;
+      }
     }
-    char *end = NULL;
-    long value = strtol(token, &end, 10);
-    if (!end || *end != '\0' || value <= 0 || value > 65535) {
-      free(copy);
-      return -1;
+    for (long p = lo; p <= hi; p++) {
+      if (count >= max_ports) {
+        free(copy);
+        return -1;
+      }
+      ports[count++] = (int)p;
     }
-    ports[count++] = (int)value;
     token = strtok(NULL, ",");
   }
 
