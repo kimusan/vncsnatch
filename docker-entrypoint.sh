@@ -42,6 +42,19 @@
 #   -e DB_URL='https://www.ip2location.com/download/?token=${IP2LOCATION_TOKEN}&file=DB1LITECSV'
 set -eu
 
+# When routed through the Tor gateway (docker-compose.tor.yml), DNS must resolve
+# via the gateway's local forwarder. Docker forbids setting `dns:` under
+# network_mode: service:*, and a NAT redirect of UDP/53 is unreliable on some
+# runtimes (Docker Desktop), so the overlay sets VNC_RESOLV=127.0.0.1 and we
+# write resolv.conf directly here. Requires running as root (the overlay does).
+if [ -n "${VNC_RESOLV:-}" ]; then
+    if printf 'nameserver %s\n' "$VNC_RESOLV" > /etc/resolv.conf 2>/dev/null; then
+        echo "vncsnatch: resolv.conf set to $VNC_RESOLV (Tor DNS)" >&2
+    else
+        echo "vncsnatch: WARNING could not write /etc/resolv.conf (need root)" >&2
+    fi
+fi
+
 # Default sources: a mix of repos, providers and hosts so no single outage is
 # fatal. The parser reads all of these layouts directly:
 #   sapics/ip-location-db  -> from,to,CC          (GeoLite2 and DB-IP)

@@ -6,7 +6,7 @@
 set -eu
 
 TRANS_PORT=9040
-DNS_PORT=53
+DNS_PORT=53          # dnsmasq listens here; forwards to tor's DNSPort (9053)
 TOR_UID="$(id -u tor)"
 
 # Only loopback is exempt from Tor. RFC1918 is deliberately NOT exempt: the
@@ -32,6 +32,12 @@ while [ "$i" -lt 60 ]; do
     sleep 2
 done
 
+# Start the local DNS forwarder (dnsmasq :53 -> tor DNSPort 127.0.0.1:9053).
+echo "tor-gateway: starting dnsmasq DNS forwarder..." >&2
+dnsmasq -C /etc/dnsmasq.conf
+# dnsmasq runs as root here, so exempt root-owned DNS in nat below is not
+# needed; dnsmasq forwards to tor over loopback.
+
 echo "tor-gateway: installing iptables redirect rules..." >&2
 iptables -F
 iptables -t nat -F
@@ -47,9 +53,11 @@ fi
 
 # NAT: let tor's own traffic out untouched; redirect DNS and TCP into tor.
 iptables -t nat -A OUTPUT -m owner --uid-owner "$TOR_UID" -j RETURN
-# Clients send DNS straight to tor's DNSPort on 127.0.0.1:53 (compose sets
-# dns: 127.0.0.1), so no DNS NAT redirect is needed. Redirect all other TCP
-# into tor's TransPort.
+# The scanner cannot set `dns:` under this network mode, so its lookups go to
+# whatever resolver its resolv.conf names. Capture all DNS (UDP+TCP :53),
+# wherever addressed, and send it to tor's DNSPort before any net match.
+iptables -t nat -A OUTPUT -p udp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
+iptables -t nat -A OUTPUT -p tcp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
 for net in $NON_TOR; do
     iptables -t nat -A OUTPUT -d "$net" -j RETURN
 done
@@ -62,6 +70,7 @@ iptables -t nat -A OUTPUT -p tcp --syn -j REDIRECT --to-ports "$TRANS_PORT"
 iptables -A OUTPUT -m owner --uid-owner "$TOR_UID" -j ACCEPT
 iptables -A OUTPUT -o lo -j ACCEPT
 iptables -A OUTPUT -p udp --dport "$DNS_PORT" -j ACCEPT
+iptables -A OUTPUT -p tcp --dport "$DNS_PORT" -j ACCEPT
 iptables -A OUTPUT -p tcp --dport "$TRANS_PORT" -j ACCEPT
 iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 for net in $NON_TOR; do

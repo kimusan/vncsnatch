@@ -22,6 +22,8 @@ services:
     cap_add:
       - NET_RAW
       - NET_ADMIN
-    # Override at runtime, e.g.:
+    # No `command:` here on purpose: the image's CMD (--help) is the default,
+    # and `docker compose run vncsnatch <args>` passes <args> straight through.
+    # A `command:` in the file would be merged ahead of run-time args by some
+    # Compose versions and swallow them. Example:
     #   docker compose run --rm vncsnatch -c DK -f /data/IP2LOCATION-LITE-DB1.CSV -o /data/results.csv
-    command: ["--help"]

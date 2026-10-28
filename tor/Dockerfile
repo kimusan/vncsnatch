@@ -10,9 +10,10 @@
 # image, so what routes your traffic is auditable here.
 FROM alpine:3.20
 
-RUN apk add --no-cache tor iptables curl
+RUN apk add --no-cache tor iptables curl dnsmasq
 
 COPY torrc /etc/tor/torrc
+COPY dnsmasq.conf /etc/dnsmasq.conf
 COPY tor-gateway.sh /usr/local/bin/tor-gateway.sh
 RUN chmod +x /usr/local/bin/tor-gateway.sh
 

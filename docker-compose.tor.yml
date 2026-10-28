@@ -1,7 +1,6 @@
 # Optional Tor overlay. Use it together with the base compose file:
 #
-#   docker compose -f docker-compose.yml -f docker-compose.tor.yml \
-#       run --rm vncsnatch -c DK -o /data/results.csv
+#   docker compose -f docker-compose.yml -f docker-compose.tor.yml run --rm vncsnatch -c DK -o /data/results.csv
 #
 # It adds a transparent Tor gateway container and makes vncsnatch share that
 # container's network namespace, so every TCP connection the scanner makes
@@ -28,10 +27,13 @@ services:
     # Share the gateway's network namespace; its iptables rules then apply to
     # the scanner's traffic. This replaces the base file's own networking.
     network_mode: "service:tor"
-    # Resolve names through tor's DNSPort (127.0.0.1:53 in the shared namespace)
-    # so lookups go over Tor instead of leaking to the host resolver.
-    dns:
-      - 127.0.0.1
+    # Docker forbids `dns:` under this network mode, so the entrypoint writes
+    # resolv.conf itself from VNC_RESOLV. That points DNS at the gateway's local
+    # dnsmasq forwarder (which relays to Tor), avoiding an unreliable UDP NAT
+    # redirect. Writing resolv.conf needs root, hence user: "0:0" in this mode.
+    user: "0:0"
+    environment:
+      VNC_RESOLV: "127.0.0.1"
     depends_on:
       tor:
         condition: service_healthy

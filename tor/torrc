@@ -4,9 +4,9 @@
 VirtualAddrNetworkIPv4 10.192.0.0/10
 AutomapHostsOnResolve 1
 TransPort 0.0.0.0:9040
-# DNSPort on 53 so clients can point straight at it (dns: 127.0.0.1) instead of
-# relying on a UDP NAT redirect, which some container runtimes mishandle.
-DNSPort 0.0.0.0:53
+# tor resolves via its own DNSPort; dnsmasq (below) forwards client DNS to it.
+# Kept on loopback:9053 so dnsmasq owns :53.
+DNSPort 127.0.0.1:9053
 SocksPort 0.0.0.0:9050
 # Keep logs on stdout so `docker logs` shows bootstrap progress.
 Log notice stdout
