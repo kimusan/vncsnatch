@@ -1341,13 +1341,24 @@ static void update_progress(scan_context_t *ctx, int force) {
   if (ctx->quiet || ctx->verbose) {
     return;
   }
+  /* The live two-line panel uses ANSI cursor moves, which only make sense on a
+   * terminal. When stdout is not a TTY (e.g. piped, or docker logs), those
+   * escapes would spam one new line per refresh, so fall back to a plain,
+   * infrequent one-line status instead. */
+  static int tty = -1;
+  if (tty < 0) {
+    tty = isatty(STDOUT_FILENO) ? 1 : 0;
+  }
   struct timeval now;
   gettimeofday(&now, NULL);
 
   pthread_mutex_lock(&ctx->print_mutex);
   long elapsed_ms = (now.tv_sec - ctx->last_print.tv_sec) * 1000L +
                     (now.tv_usec - ctx->last_print.tv_usec) / 1000L;
-  if (!force && elapsed_ms >= 0 && elapsed_ms < 200) {
+  /* Throttle: 200ms on a TTY for a smooth panel, 5s otherwise to keep logs
+   * readable. */
+  long min_ms = tty ? 200 : 5000;
+  if (!force && elapsed_ms >= 0 && elapsed_ms < min_ms) {
     pthread_mutex_unlock(&ctx->print_mutex);
     return;
   }
@@ -1416,6 +1427,23 @@ static void update_progress(scan_context_t *ctx, int force) {
   }
   if (filled > bar_width) {
     filled = bar_width;
+  }
+
+  /* Non-TTY: one compact, escape-free status line per update, then return. */
+  if (!tty) {
+    const char *online_label = ctx->ping_available ? "online" : "online(tcp)";
+    uint64_t online_val = ctx->ping_available ? online : online_tcp;
+    printf("[progress] %5.1f%% %llu/%llu  rate:%.1f/s  eta:%s  "
+           "%s:%llu vnc:%llu noauth:%llu auth:%llu/%llu shots:%llu\n",
+           pct, (unsigned long long)scanned, (unsigned long long)total, rate,
+           eta_buf, online_label, (unsigned long long)online_val,
+           (unsigned long long)vnc_found, (unsigned long long)vnc_noauth,
+           (unsigned long long)auth_success, (unsigned long long)auth_attempts,
+           (unsigned long long)shots);
+    fflush(stdout);
+    ctx->last_print = now;
+    pthread_mutex_unlock(&ctx->print_mutex);
+    return;
   }
 
   if (!ctx->ui_initialized) {

@@ -25,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `VNC_*` environment variables mapping to every CLI flag (plus free-form `VNC_ARGS`), so the scanner can be driven entirely from a compose `environment:` block; command-line flags still override them.
 - CSV parser unit tests (`tests/test_csv_parser.c`) and a `Docker` CI workflow that builds the image, checks the binary is static, runs the parser tests, and smoke-tests the auto-download.
 
+### Fixed
+
+- Progress panel no longer spams one line per refresh when stdout is not a TTY (e.g. `docker logs`): it falls back to a plain, escape-free status line printed every few seconds.
+- ICMP reachability failures (`Sendto failed: Operation not permitted`, e.g. with no `CAP_NET_RAW` or behind the Tor gateway) are detected once and latched off silently instead of printing per host; the scan uses its TCP fallback.
+
 ### Changed
 
 - Clarify libjpeg requirement for clean-room screenshots in documentation.
