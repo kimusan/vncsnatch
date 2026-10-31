@@ -1,0 +1,26 @@
+# VCS / CI
+.git
+.github
+
+# Build artifacts
+*.o
+src/*.o
+vncsnatch
+.depend
+tests/bin
+
+# Runtime output / checkpoints
+output
+*.line
+*.jpg
+metadata
+
+# Docs & notes not needed in image
+assets
+*.md
+LICENSE
+
+# Editor noise
+*~
+.vscode
+.idea

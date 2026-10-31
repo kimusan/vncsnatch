@@ -89,9 +89,22 @@ bool is_ip_up(const char *ip_addr) {
   char recv_buf[1024];
   struct timeval timeout = {1, 0}; // 1 second timeout
 
+  /* If ICMP has already proven unusable in this environment (no CAP_NET_RAW,
+   * or a sandbox/namespace that blocks raw sockets, e.g. behind the Tor
+   * gateway), stop trying and let the caller fall back to a TCP check. This is
+   * checked once and then latched, so we do not spam a perror per host. */
+  static int icmp_disabled = 0;
+  if (icmp_disabled) {
+    return false;
+  }
+
   sockfd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
   if (sockfd < 0) {
-    perror(COLOR_RED "Socket creation failed" COLOR_RESET);
+    if (errno == EPERM || errno == EACCES) {
+      icmp_disabled = 1;
+    } else {
+      perror(COLOR_RED "Socket creation failed" COLOR_RESET);
+    }
     return false;
   }
 
@@ -107,7 +120,13 @@ bool is_ip_up(const char *ip_addr) {
 
   if (sendto(sockfd, &icmp_pkt, sizeof(icmp_pkt), 0, (struct sockaddr *)&addr,
              sizeof(addr)) <= 0) {
-    perror(COLOR_RED "Sendto failed" COLOR_RESET);
+    /* Raw socket opened but sending is denied (common under network
+     * namespaces / seccomp). Latch it off silently and fall back to TCP. */
+    if (errno == EPERM || errno == EACCES) {
+      icmp_disabled = 1;
+    } else {
+      perror(COLOR_RED "Sendto failed" COLOR_RESET);
+    }
     close(sockfd);
     return false;
   }

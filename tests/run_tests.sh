@@ -18,6 +18,10 @@ $cc -g -Wall -I"$root_dir/src" \
   -o "$bin_dir/test_resume" \
   "$root_dir/tests/test_resume.c"
 
+$cc -g -Wall -I"$root_dir/src" \
+  -o "$bin_dir/test_csv_parser" \
+  "$root_dir/tests/test_csv_parser.c"
+
 vncgrab_cflags=()
 vncgrab_ldflags=(-ljpeg)
 if [ "${USE_OPENSSL:-0}" = "1" ]; then
@@ -169,6 +173,11 @@ total=$((total + 1))
 
 echo "Case: resume parsing"
 "$bin_dir/test_resume"
+passed=$((passed + 1))
+total=$((total + 1))
+
+echo "Case: CSV parser"
+"$bin_dir/test_csv_parser"
 passed=$((passed + 1))
 total=$((total + 1))
 

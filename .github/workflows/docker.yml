@@ -1,0 +1,84 @@
+name: Docker
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  # Build the image and sanity-check that the binary runs.
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          tags: vncsnatch:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Binary runs (--help)
+        run: docker run --rm vncsnatch:ci --help
+
+      - name: Binary is static
+        run: |
+          docker run --rm --entrypoint sh vncsnatch:ci -c \
+            'ldd /usr/local/bin/vncsnatch 2>&1 | grep -q "Not a valid dynamic program"'
+
+  # Compile and run the standalone CSV parser unit tests (no network, no scan).
+  parser-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install toolchain
+        run: sudo apt-get update && sudo apt-get install -y gcc
+
+      - name: Run parser tests
+        run: |
+          cd tests
+          gcc -Wall -Wextra -o parser_tests test_csv_parser.c
+          ./parser_tests
+
+  # Verify the entrypoint's auto-download works end to end (no scan): the
+  # "fetch-db" command downloads from the default sources into the cache.
+  download-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          tags: vncsnatch:ci
+
+      - name: Entrypoint downloads a database
+        run: |
+          # Use a named volume so it is owned by the container's non-root user
+          # (a host bind mount would be owned by the runner uid and unwritable).
+          docker volume create vncdata
+          docker run --rm -v vncdata:/data vncsnatch:ci fetch-db
+          docker run --rm -v vncdata:/data --entrypoint sh vncsnatch:ci -c \
+            'test -s /data/ip-country.csv && grep -q ",AD" /data/ip-country.csv'
+          docker volume rm vncdata
+
+      - name: DB_URL_EXTRA is tried first
+        run: |
+          docker volume create vncdata
+          # A bad extra source must fall through to the working defaults.
+          docker run --rm -v vncdata:/data \
+            -e DB_URL_EXTRA="https://127.0.0.1:1/nope.csv" \
+            vncsnatch:ci fetch-db
+          docker run --rm -v vncdata:/data --entrypoint sh vncsnatch:ci -c \
+            'test -s /data/ip-country.csv'
+          docker volume rm vncdata

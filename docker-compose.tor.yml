@@ -1,0 +1,43 @@
+# Optional Tor overlay. Use it together with the base compose file:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.tor.yml run --rm vncsnatch -c DK -o /data/results.csv
+#
+# It adds a transparent Tor gateway container and makes vncsnatch share that
+# container's network namespace, so every TCP connection the scanner makes
+# exits through Tor with no application changes. Plug-and-play: drop the second
+# -f to go back to direct scanning.
+#
+# Notes:
+#  - Tor carries TCP only, so the ICMP fast-path is unavailable here; the
+#    scanner automatically uses its TCP connect fallback.
+#  - Scanning large ranges through Tor is slow and hard on the Tor network;
+#    keep rates low (-R) and ranges small.
+services:
+  tor:
+    build:
+      context: ./tor
+      dockerfile: Dockerfile
+    image: vncsnatch-tor:local
+    # iptables needs NET_ADMIN; the gateway does not need to be otherwise
+    # privileged.
+    cap_add:
+      - NET_ADMIN
+
+  vncsnatch:
+    # Share the gateway's network namespace; its iptables rules then apply to
+    # the scanner's traffic. This replaces the base file's own networking.
+    network_mode: "service:tor"
+    # Docker forbids `dns:` under this network mode, so the entrypoint writes
+    # resolv.conf itself from VNC_RESOLV. That points DNS at the gateway's local
+    # dnsmasq forwarder (which relays to Tor), avoiding an unreliable UDP NAT
+    # redirect. Writing resolv.conf needs root, hence user: "0:0" in this mode.
+    user: "0:0"
+    environment:
+      VNC_RESOLV: "127.0.0.1"
+    depends_on:
+      tor:
+        condition: service_healthy
+    # The capabilities from the base file do not apply once we join another
+    # container's netns; drop them to avoid confusion. ICMP is unavailable over
+    # Tor anyway, so the TCP fallback is used.
+    cap_add: []

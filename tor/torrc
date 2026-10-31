@@ -1,0 +1,12 @@
+# Transparent-proxy Tor configuration for the vncsnatch gateway.
+# TransPort receives redirected TCP; DNSPort receives redirected DNS; SocksPort
+# is kept for health checks and manual use.
+VirtualAddrNetworkIPv4 10.192.0.0/10
+AutomapHostsOnResolve 1
+TransPort 0.0.0.0:9040
+# tor resolves via its own DNSPort; dnsmasq (below) forwards client DNS to it.
+# Kept on loopback:9053 so dnsmasq owns :53.
+DNSPort 127.0.0.1:9053
+SocksPort 0.0.0.0:9050
+# Keep logs on stdout so `docker logs` shows bootstrap progress.
+Log notice stdout

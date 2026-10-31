@@ -8,20 +8,40 @@ on:
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
 
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: default
+            make_args: ""
+          - name: openssl
+            make_args: "USE_OPENSSL=1"
+
+    name: build (${{ matrix.name }})
+
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
+
     - name: install dependencies
-      run: | 
-          sudo apt install libreadline-dev libcap-dev libjpeg-turbo8-dev
-    - name: make
-      run: make
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libreadline-dev libcap-dev libjpeg-turbo8-dev
+
+    - name: build
+      run: make ${{ matrix.make_args }}
+
+    - name: binary exists
+      run: test -x ./vncsnatch
+
+    - name: help runs
+      run: ./vncsnatch --help
+
     - name: test
-      run: make test
-          
-#    - name: make check
-#      run: make check
-#    - name: make distcheck
-#      run: make distcheck
+      run: make ${{ matrix.make_args }} test
+
+    - name: build is reproducible after clean
+      run: |
+        make clean
+        make ${{ matrix.make_args }}
